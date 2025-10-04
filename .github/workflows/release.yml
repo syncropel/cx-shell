@@ -51,8 +51,6 @@ jobs:
 
       - name: Build portable Linux binary using Docker
         run: |
-          # We are switching to the standard 'bullseye' image, not 'slim-bullseye'.
-          # This provides a more complete build environment with all necessary shared libraries.
           docker run --rm \
             -v "$(pwd)":/work -w /work \
             --name cx-builder \
@@ -65,26 +63,26 @@ jobs:
               pip install uv && \
               uv venv && \
               uv pip install -e .[all] && \
-              PLAYWRIGHT_BROWSERS_PATH=0 uv run playwright install --with-deps chromium && \
+              \
+              # --- THIS IS THE DEFINITIVE FIX --- \
+              # We DO NOT run 'playwright install' during the build. \
+              # This prevents PyInstaller from trying to bundle the massive browser binaries \
+              # and getting confused by their shared library dependencies. \
+              # The user is responsible for running 'playwright install' on their own machine \
+              # if they intend to use browser automation features. \
+              # --- END FIX --- \
+              \
               uv run pyinstaller cx.spec \
             "
 
       - name: Smoke Test the built binary
         run: |
-          echo "--- Verifying binary was created ---"
-          ls -l dist/cx
-
-          echo "--- Running smoke test inside a clean container ---"
-          # We run the test in a fresh, minimal container to simulate a real-world environment.
-          # We mount the 'dist' directory containing our new binary.
+          # The smoke test can remain. If the build without playwright browsers
+          # is successful, this test will now pass.
           docker run --rm \
             -v "$(pwd)/dist:/app" \
             debian:bullseye-slim \
-            bash -c " \
-              echo '--- Inside container: Testing binary ---' && \
-              /app/cx --version && \
-              echo '--- Smoke test PASSED ---' \
-            "
+            bash -c "/app/cx --version"
 
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
@@ -92,7 +90,6 @@ jobs:
         run: |
           VERSION=${{ github.ref_name }}
           ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
-          echo "Archiving dist/cx to ${ARCHIVE_NAME}..."
           tar -czvf "${ARCHIVE_NAME}" -C dist cx
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
