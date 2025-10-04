@@ -76,7 +76,7 @@ jobs:
           # We mount the 'dist' directory containing our new binary.
           docker run --rm \
             -v "$(pwd)/dist:/app" \
-            debian:bullseye-slim \
+            python:3.12-slim-bullseye \
             bash -c " \
               echo '--- Inside container: Testing binary ---' && \
               /app/cx --version && \
