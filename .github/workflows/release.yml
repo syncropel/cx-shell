@@ -30,7 +30,8 @@ jobs:
       - name: Install all dependencies for testing
         run: uv pip install -e .[all]
       - name: Run Pytest
-        run: uv run pytest
+        # The most robust way to run pytest, bypassing any shebang issues.
+        run: python -m pytest
 
   build:
     name: Build Executable on ${{ matrix.os }}
@@ -39,23 +40,14 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Currently focused on Linux. To re-enable, add 'macos-latest' and 'windows-latest'.
+        os: [ubuntu-latest]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
-      - name: Install System Dependencies (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install unixodbc
-
-      - name: Install uv
-        run: pip install uv
-
+      # Note: Caching is not used in the Docker step, but is kept for non-Docker builds.
       - name: Cache Python dependencies
         uses: actions/cache@v4
         with:
@@ -64,15 +56,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
-      # --- START OF DEFINITIVE, FINAL FIX ---
-      - name: Install Dependencies and Build (macOS & Windows)
-        if: matrix.os == 'macos-latest' || matrix.os == 'windows-latest'
-        run: |
-          uv venv
-          uv pip install -e .[all]
-          # Use the official method to install browsers into site-packages
-          PLAYWRIGHT_BROWSERS_PATH=0 uv run playwright install --with-deps chromium
-          uv run pyinstaller cx.spec
+      # --- Platform-Specific Build Steps ---
 
       - name: Build for Linux using Docker
         if: matrix.os == 'ubuntu-latest'
@@ -91,22 +75,65 @@ jobs:
               PLAYWRIGHT_BROWSERS_PATH=0 uv run playwright install --with-deps chromium && \
               uv run pyinstaller cx.spec \
             "
-      # --- END OF DEFINITIVE, FINAL FIX ---
-      - name: Prepare and Archive Executable
-        id: prepare_artifact
+
+      - name: Build for macOS / Windows
+        if: matrix.os == 'macos-latest' || matrix.os == 'windows-latest'
         shell: bash
         run: |
-          VERSION=${{ github.ref_name }}
-          OS_NAME=$(echo ${{ matrix.os }} | tr '[:upper:]' '[:lower:]' | sed 's/-latest//')
+          # Install dependencies needed on specific runners
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            brew install unixodbc
+          fi
 
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            EXECUTABLE_PATH="dist/cx.exe"
-            ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-amd64.zip"
+          pip install uv
+          uv venv
+          uv pip install -e .[all]
+
+          # This syntax for setting an environment variable for a single command
+          # is compatible with bash (used on macOS and by default on Windows runners).
+          PLAYWRIGHT_BROWSERS_PATH=0 uv run playwright install --with-deps chromium
+
+          uv run pyinstaller cx.spec
+
+      # --- Artifact Preparation (Platform-Agnostic) ---
+
+      - name: Prepare and Archive Executable
+        id: prepare_artifact
+        shell: bash # Use bash on all runners for consistent scripting
+        run: |
+          VERSION=${{ github.ref_name }}
+          OS_LOWER=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+
+          # Use a case statement for clarity and extensibility
+          case "$OS_LOWER" in
+            windows*)
+              OS_NAME="windows"
+              ARCH="amd64"
+              EXT=".zip"
+              EXECUTABLE_PATH="dist/cx.exe"
+              ;;
+            macos*)
+              OS_NAME="macos"
+              ARCH="x86_64"
+              EXT=".tar.gz"
+              EXECUTABLE_PATH="dist/cx"
+              ;;
+            *)
+              OS_NAME="linux"
+              ARCH="x86_64"
+              EXT=".tar.gz"
+              EXECUTABLE_PATH="dist/cx"
+              ;;
+          esac
+
+          ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-${ARCH}${EXT}"
+
+          echo "Archiving ${EXECUTABLE_PATH} to ${ARCHIVE_NAME}..."
+
+          if [[ "$EXT" == ".zip" ]]; then
             powershell -Command "Compress-Archive -Path '${EXECUTABLE_PATH}' -DestinationPath '${ARCHIVE_NAME}'"
           else
-            EXECUTABLE_PATH="dist/cx"
-            ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-x86_64.tar.gz"
-            tar -czvf ${ARCHIVE_NAME} -C dist cx
+            tar -czvf "${ARCHIVE_NAME}" -C dist cx
           fi
 
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
@@ -128,10 +155,15 @@ jobs:
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
+          # The path where all downloaded artifacts will be placed
           path: release-assets
 
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
+          # Use GitHub's automatic release note generation, which is superior
+          # to manually managing a CHANGELOG in the release body.
           generate_release_notes: true
+          # This glob will find all artifacts downloaded in the previous step
+          # and upload them to the release.
           files: release-assets/**/*
