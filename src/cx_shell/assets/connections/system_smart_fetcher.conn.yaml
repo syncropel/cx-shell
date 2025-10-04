@@ -1,0 +1,8 @@
+name: "System Smart Fetcher"
+id: "user:system_smart_fetcher"
+api_catalog_id: "catalog:internal-fetcher"
+auth_method_type: "none"
+catalog:
+  id: "catalog:internal-fetcher"
+  name: "Smart Fetcher"
+  connector_provider_key: "internal-smart_fetcher"

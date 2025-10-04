@@ -1,0 +1,35 @@
+id: "blueprint:system-anthropic"
+name: "Anthropic Claude API"
+version: "1.0.0"
+connector_provider_key: "rest-declarative"
+
+supported_auth_methods:
+  - type: "api_key"
+    display_name: "API Key Authentication"
+    fields:
+      - name: "api_key"
+        label: "Anthropic API Key (sk-ant-...)"
+        type: "secret"
+        is_password: true
+
+browse_config:
+  base_url_template: "https://api.anthropic.com/v1"
+  auth_config:
+    type: "header"
+    header_name: "x-api-key" # Provider-specific header name
+    value_template: "{{ secrets.api_key }}"
+    # Anthropic requires additional, non-auth headers.
+    additional_headers:
+      - name: "anthropic-version"
+        value_template: "2023-06-01"
+      - name: "content-type"
+        value_template: "application/json"
+
+  action_templates:
+    createMessage:
+      http_method: "POST"
+      api_endpoint: "/messages"
+      description: "Creates a response from a Claude model for a given conversation."
+      parameters_model: "schemas.CreateMessageParameters"
+      payload_constructor:
+        _model: "schemas.CreateMessagePayload"

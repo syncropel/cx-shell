@@ -1,0 +1,9 @@
+name: "System Python Sandbox"
+id: "user:system_python_sandbox"
+api_catalog_id: "catalog:internal-python"
+auth_method_type: "none"
+details: {}
+catalog:
+  id: "catalog:internal-python"
+  name: "Python Sandbox Runtime"
+  connector_provider_key: "python-sandboxed"

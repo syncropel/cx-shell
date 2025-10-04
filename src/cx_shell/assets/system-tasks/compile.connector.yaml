@@ -1,0 +1,38 @@
+name: "Blueprint Compilation Workflow"
+description: "Ingests an API specification and generates a Syncropel blueprint package."
+
+steps:
+  - id: "fetch_spec"
+    name: "Fetch Source Specification"
+    connection_source: "user:system_smart_fetcher"
+    run:
+      action: "read_content"
+      path: "{{ script_input.spec_source }}"
+
+  - id: "parse_and_generate"
+    depends_on: ["fetch_spec"]
+    name: "Parse Spec and Generate Artifacts"
+    connection_source: "user:system_python_sandbox"
+    run:
+      action: "run_python_script"
+      script_path: "asset:system-lib/compilers/spec_compiler.py"
+      input_data_json: "{{ steps.fetch_spec.result.content }}"
+    outputs:
+      blueprint_yaml: "blueprint_yaml"
+      schemas_py: "schemas_py"
+
+  - id: "write_artifacts"
+    depends_on: ["fetch_spec", "parse_and_generate"]
+    name: "Write Blueprint Package to Filesystem"
+    connection_source: "user:fs_generic"
+    run:
+      action: "write_files"
+      files:
+        - path: "{{ script_input.output_dir }}/source_spec.json"
+          content: "{{ steps.fetch_spec.result.content }}"
+
+        - path: "{{ script_input.output_dir }}/blueprint.cx.yaml"
+          content: "{{ steps.parse_and_generate.outputs.blueprint_yaml }}"
+
+        - path: "{{ script_input.output_dir }}/schemas.py"
+          content: "{{ steps.parse_and_generate.outputs.schemas_py }}"

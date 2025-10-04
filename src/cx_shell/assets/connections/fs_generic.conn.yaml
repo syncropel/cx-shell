@@ -1,0 +1,10 @@
+name: "Local Filesystem (Generic Root)"
+id: "user:fs_generic"
+api_catalog_id: "catalog:internal-filesystem"
+auth_method_type: "none"
+details:
+  base_path: "/"
+catalog:
+  id: "catalog:internal-filesystem"
+  name: "Local Filesystem"
+  connector_provider_key: "fs-declarative"

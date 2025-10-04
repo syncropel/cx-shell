@@ -1,0 +1,39 @@
+id: "blueprint:system-google-gemini"
+name: "Google Gemini API"
+version: "1.0.0"
+connector_provider_key: "rest-declarative"
+
+# Defines the fields for the interactive `cx connection create` wizard.
+supported_auth_methods:
+  - type: "api_key"
+    display_name: "API Key Authentication"
+    fields:
+      - name: "api_key"
+        label: "Google AI Studio API Key"
+        type: "secret"
+        is_password: true
+
+# Defines the runtime behavior for the DeclarativeRestStrategy.
+browse_config:
+  base_url_template: "https://generativelanguage.googleapis.com/v1beta/models"
+
+  # Note: Google's API key is passed as a URL parameter, not a header.
+  # The key will be embedded directly in the `api_endpoint` templates below.
+
+  action_templates:
+    generateContent:
+      http_method: "POST"
+      # The API key is templated directly into the URL as a query parameter.
+      api_endpoint: "/gemini-1.5-flash:generateContent?key={{ secrets.api_key }}"
+      description: "Generates a response from a Gemini model."
+      parameters_model: "schemas.GenerateContentParameters"
+      payload_constructor:
+        _model: "schemas.GenerateContentPayload"
+
+    streamGenerateContent:
+      http_method: "POST"
+      api_endpoint: "/gemini-1.5-flash:streamGenerateContent?key={{ secrets.api_key }}"
+      description: "Generates a streaming response from a Gemini model."
+      parameters_model: "schemas.GenerateContentParameters"
+      payload_constructor:
+        _model: "schemas.GenerateContentPayload"

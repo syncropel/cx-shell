@@ -1,0 +1,20 @@
+id: "blueprint:system-browser"
+name: "Web Browser Session"
+version: "1.0.0"
+connector_provider_key: "browser-declarative"
+
+# Defines the fields for the interactive `cx connection create` wizard.
+supported_auth_methods:
+  - type: "browser_config"
+    display_name: "Local Browser Configuration"
+    fields:
+      - name: "browser_type"
+        label: "Browser (chromium, firefox, webkit)"
+        type: "detail"
+      - name: "headless"
+        label: "Run in headless mode? (true/false)"
+        type: "detail"
+
+# This provider does not use action_templates, as its actions are built-in
+# and dispatched by the ScriptEngine based on the `browser_*` action type.
+browse_config: {}

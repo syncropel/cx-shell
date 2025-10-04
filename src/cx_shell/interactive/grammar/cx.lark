@@ -1,0 +1,132 @@
+?start: expression
+expression: pipeline
+pipeline: command_unit (VBAR command_unit)*
+
+command_unit: executable formatter?
+// An executable is a single unit of execution.
+// It can be a command, an assignment, a parenthesized expression, or a data access operation.
+executable: single_command | assignment | "(" expression ")" | data_access
+
+// Data access is now its own top-level concept.
+// It can be a simple variable lookup OR a slice operation on a variable.
+data_access: variable_lookup | slice_operation
+
+assignment: CNAME "=" expression
+// A single executable can be a command or a variable lookup
+single_executable: single_command | variable_lookup
+
+// It's a CNAME (the variable) followed by a square-bracketed STRING (the JMESPath query)
+slice_operation: CNAME "[" STRING "]"
+
+variable_lookup: CNAME
+
+single_command: dot_notation_command | builtin_command
+
+formatter: formatter_option+
+formatter_option: output_option | columns_option | query_option
+output_option: "--cx-output" ARG
+columns_option: "--cx-columns" column_list
+query_option: "--cx-query" STRING
+column_list: CNAME ("," CNAME)*
+
+// --- COMMAND DEFINITIONS ---
+
+dot_notation_command: CNAME "." CNAME "(" [arguments | value] ")"
+builtin_command: connections_command | help_command | inspect_command | connect_command | session_command | variable_command | flow_command | query_command | script_command | connection_command | open_command | app_command | agent_command | process_command | compile_command | workspace_command | find_command | install_command | read_command | publish_command
+
+connect_command: "connect" ARG "--as" ARG
+connections_command: "connections"
+help_command: "help"
+inspect_command: "inspect" ARG
+agent_command: "agent" STRING
+
+session_command: "session" session_subcommand
+session_subcommand: "list" -> session_list
+    | "status" -> session_status
+    | "save" ARG -> session_save
+    | "load" ARG -> session_load
+    | "rm" ARG -> session_rm
+
+variable_command: ("var" | "vars") variable_subcommand
+variable_subcommand: "list" -> variable_list
+    | "rm" ARG -> variable_rm
+
+// --- DEFINITIVE, UNAMBIGUOUS STRUCTURE for RUN commands ---
+// Required flags come first, followed by an optional block of key=value parameters.
+
+// An optional block for user-defined key=value parameters
+?params_block: (kv_pair)*
+
+flow_command: "flow" flow_subcommand
+flow_subcommand: "list" -> flow_list
+    | "run" "--name" value params_block -> flow_run
+
+query_command: "query" query_subcommand
+query_subcommand: "list" -> query_list
+    | "run" "--on" value "--name" value params_block -> query_run
+
+script_command: "script" script_subcommand
+script_subcommand: "list" -> script_list
+    | "run" "--name" value params_block -> script_run
+// --- END ---
+
+connection_command: "connection" connection_subcommand
+connection_subcommand: "list" -> connection_list
+    | "create" named_argument* -> connection_create
+
+open_command: "open" open_args? -> open_command_handler
+open_args: (JINJA_BLOCK | ARG | named_argument)+
+
+app_command: "app" app_subcommand
+app_subcommand: "list" -> app_list
+    | "install" named_argument+ -> app_install
+    | "uninstall" ARG -> app_uninstall
+    | "sync" -> app_sync
+    | "package" ARG -> app_package
+    | "search" [ARG] -> app_search
+
+compile_command: "compile" named_argument+ -> compile_command_with_args
+
+process_command: "process" process_subcommand
+process_subcommand: "list" -> process_list
+    | "logs" ARG ["--follow"] -> process_logs
+    | "stop" ARG -> process_stop
+
+workspace_command: "workspace" workspace_subcommand
+workspace_subcommand: "list" -> workspace_list
+    | "add" ARG -> workspace_add
+    | "remove" ARG -> workspace_remove
+    | "index" named_argument* -> workspace_index  # <-- CHANGED
+
+find_command: "find" (STRING | named_argument | kv_pair)* -> find_command
+
+install_command: "install" -> install
+
+// read_command is the word "read" followed by an optional value (like a string or a variable).
+// The `[value]` makes the argument optional, which is crucial for it to work with piped input.
+read_command: "read" [value]
+
+// publish_command
+publish_command: "publish" (named_argument | kv_pair)+ -> publish_command_handler
+// --- Argument & Terminal Definitions ---
+
+arguments: (kw_argument ("," kw_argument)*)
+kw_argument: CNAME "=" value
+kv_pair: CNAME "=" value
+named_argument: FLAG [(STRING | ARG)]
+
+FLAG.1: /--[a-zA-Z0-9-]+/
+ARG: /[a-zA-Z0-9_:\-.~+\/@]+/
+JINJA_BLOCK: /\{\{[^}]*\}\}/
+STRING : /(\"[^\"]*\"|\'[^\']*\')/
+VBAR: "|"
+%import common.SIGNED_NUMBER -> NUMBER
+%import common.CNAME
+%import common.WS
+%ignore WS
+
+// --- 1. Define a new terminal for comments that start with '#' and go to the end of the line. ---
+COMMENT: /#.*(\r?\n|$)/
+// --- 2. Tell the Lark parser to completely ignore this terminal when building the parse tree. ---
+%ignore COMMENT
+value: STRING | NUMBER | "true" -> true | "false" -> false | "null" -> null | CNAME | JINJA_BLOCK

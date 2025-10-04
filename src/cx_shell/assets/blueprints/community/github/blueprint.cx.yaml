@@ -1,0 +1,18 @@
+id: blueprint:community-github-starter
+name: GitHub API (Starter)
+version: 0.1.0
+connector_provider_key: rest-declarative
+
+supported_auth_methods:
+  - type: none
+    display_name: "No Authentication (Public Endpoints)"
+    fields: []
+
+browse_config:
+  base_url_template: https://api.github.com
+  action_templates:
+    getUser:
+      http_method: GET
+      api_endpoint: /users/{{ username }}
+      parameters_model: schemas.UsersGetByUsernameParameters
+      description: "Provides publicly available information about a GitHub user."

@@ -1,0 +1,4 @@
+name: "GitHub Public API"
+id: "user:github"
+api_catalog_id: "community/github@v0.1.0"
+auth_method_type: "none"

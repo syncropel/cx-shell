@@ -1,0 +1,41 @@
+# The default agent profile to use if not specified in a command.
+default_profile: "openai_balanced"
+
+# A dictionary of user-defined agent profiles.
+# Users can add their own profiles for different providers (Anthropic, Google, Ollama)
+# or for different purposes (e.g., a "fast_and_cheap" profile using GPT-3.5).
+profiles:
+  openai_balanced:
+    description: "A balanced profile using OpenAI models for good performance and cost."
+
+    # The Planner gets the most powerful model, as it is responsible for high-level strategy.
+    planner:
+      connection_alias: "cx_openai"
+      action: "createChatCompletion"
+      parameters:
+        model: "gpt-5-2025-08-07"
+
+    # The Tool Specialist needs to be precise and deterministic.
+    tool_specialist:
+      connection_alias: "cx_openai"
+      action: "createChatCompletion"
+      parameters:
+        model: "gpt-5-2025-08-07"
+        response_format: { "type": "json_object" } # Future: Add JSON mode when blueprints support it.
+
+    # The Analyst can be a cheaper, faster model as its task is more constrained.
+    analyst:
+      connection_alias: "cx_openai"
+      action: "createChatCompletion"
+      parameters:
+        model: "gpt-5-2025-08-07"
+        # temperature: 0.3
+        response_format: { "type": "json_object" }
+
+    # The inline assistant (`//`) must be extremely fast for a good UX.
+    co_pilot:
+      connection_alias: "cx_openai"
+      action: "createChatCompletion"
+      parameters:
+        model: "gpt-3.5-turbo" # Prioritize latency over reasoning power.
+        temperature: 0.0

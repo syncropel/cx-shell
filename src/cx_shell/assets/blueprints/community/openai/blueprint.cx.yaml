@@ -1,0 +1,36 @@
+id: "blueprint:system-openai"
+name: "OpenAI API"
+version: "1.0.0"
+connector_provider_key: "rest-declarative"
+
+# Defines the fields for the interactive `cx connection create` wizard.
+supported_auth_methods:
+  - type: "api_key"
+    display_name: "API Key Authentication"
+    fields:
+      - name: "api_key"
+        label: "OpenAI API Key (sk-...)"
+        type: "secret"
+        is_password: true
+
+# Defines the runtime behavior for the DeclarativeRestStrategy.
+browse_config:
+  base_url_template: "https://api.openai.com/v1"
+
+  # Tells the strategy how to authenticate using the secret from `supported_auth_methods`.
+  auth_config:
+    type: "header"
+    header_name: "Authorization"
+    value_template: "Bearer {{ secrets.api_key }}"
+
+  # Defines the actions available to the user (and the agent).
+  action_templates:
+    createChatCompletion:
+      http_method: "POST"
+      api_endpoint: "/chat/completions"
+      description: "Creates a model response for the given chat conversation."
+      # Validates that the AgentOrchestrator provides the correct inputs.
+      parameters_model: "schemas.CreateChatCompletionParameters"
+      # Constructs the JSON body for the POST request from the provided parameters.
+      payload_constructor:
+        _model: "schemas.CreateChatCompletionPayload"
