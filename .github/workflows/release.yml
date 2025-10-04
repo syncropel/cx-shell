@@ -40,7 +40,7 @@ jobs:
           python -m pytest
 
   build-linux:
-    name: Build Executable for Linux
+    name: Build and Smoke Test Executable for Linux
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -64,25 +64,25 @@ jobs:
               uv venv && \
               uv pip install -e .[all] && \
               \
-              # --- THIS IS THE DEFINITIVE FIX --- \
-              # We DO NOT run 'playwright install' during the build. \
-              # This prevents PyInstaller from trying to bundle the massive browser binaries \
-              # and getting confused by their shared library dependencies. \
-              # The user is responsible for running 'playwright install' on their own machine \
-              # if they intend to use browser automation features. \
-              # --- END FIX --- \
+              echo '--- Skipping playwright install during build to ensure a clean binary ---' && \
               \
               uv run pyinstaller cx.spec \
             "
 
       - name: Smoke Test the built binary
         run: |
-          # The smoke test can remain. If the build without playwright browsers
-          # is successful, this test will now pass.
+          echo "--- Verifying binary was created ---"
+          ls -l dist/cx
+
+          echo "--- Running smoke test inside a clean, minimal container ---"
           docker run --rm \
             -v "$(pwd)/dist:/app" \
             debian:bullseye-slim \
-            bash -c "/app/cx --version"
+            bash -c " \
+              echo '--- Inside container: Testing binary ---' && \
+              /app/cx --version && \
+              echo '--- Smoke test PASSED ---' \
+            "
 
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
@@ -90,6 +90,7 @@ jobs:
         run: |
           VERSION=${{ github.ref_name }}
           ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
+          echo "Archiving dist/cx to ${ARCHIVE_NAME}..."
           tar -czvf "${ARCHIVE_NAME}" -C dist cx
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
