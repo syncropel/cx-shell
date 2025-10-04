@@ -66,6 +66,23 @@ jobs:
               uv run pyinstaller cx.spec \
             "
 
+      - name: Smoke Test the built binary
+        run: |
+          echo "--- Verifying binary was created ---"
+          ls -l dist/cx
+
+          echo "--- Running smoke test inside a clean container ---"
+          # We run the test in a fresh, minimal container to simulate a real-world environment.
+          # We mount the 'dist' directory containing our new binary.
+          docker run --rm \
+            -v "$(pwd)/dist:/app" \
+            debian:bullseye-slim \
+            bash -c " \
+              echo '--- Inside container: Testing binary ---' && \
+              /app/cx --version && \
+              echo '--- Smoke test PASSED ---' \
+            "
+
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
         shell: bash
