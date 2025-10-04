@@ -51,9 +51,12 @@ jobs:
 
       - name: Build portable Linux binary using Docker
         run: |
+          # We are switching to the standard 'bullseye' image, not 'slim-bullseye'.
+          # This provides a more complete build environment with all necessary shared libraries.
           docker run --rm \
             -v "$(pwd)":/work -w /work \
-            python:3.12-slim-bullseye \
+            --name cx-builder \
+            python:3.12-bullseye \
             bash -c " \
               apt-get update && \
               apt-get install -y --no-install-recommends \
@@ -76,7 +79,7 @@ jobs:
           # We mount the 'dist' directory containing our new binary.
           docker run --rm \
             -v "$(pwd)/dist:/app" \
-            python:3.12-slim-bullseye \
+            debian:bullseye-slim \
             bash -c " \
               echo '--- Inside container: Testing binary ---' && \
               /app/cx --version && \
