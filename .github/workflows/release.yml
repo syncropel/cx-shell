@@ -12,12 +12,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install uv
         run: pip install uv
+
       - name: Cache Python dependencies
         uses: actions/cache@v4
         with:
@@ -25,13 +28,16 @@ jobs:
           key: ${{ runner.os }}-uv-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-uv-
-      - name: Create virtual environment
-        run: uv venv
-      - name: Install all dependencies for testing
-        run: uv pip install -e .[all]
+
+      - name: Create virtual environment and install dependencies
+        run: |
+          uv venv
+          uv pip install -e .[all]
+
       - name: Run Pytest
-        # The most robust way to run pytest, bypassing any shebang issues.
-        run: python -m pytest
+        run: |
+          source .venv/bin/activate
+          python -m pytest
 
   build:
     name: Build Executable on ${{ matrix.os }}
@@ -42,13 +48,14 @@ jobs:
       matrix:
         # Currently focused on Linux. To re-enable, add 'macos-latest' and 'windows-latest'.
         os: [ubuntu-latest]
+        # os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Note: Caching is not used in the Docker step, but is kept for non-Docker builds.
       - name: Cache Python dependencies
+        if: matrix.os != 'ubuntu-latest' # Caching is not used in the Docker step
         uses: actions/cache@v4
         with:
           path: ~/.cache/uv
@@ -85,14 +92,15 @@ jobs:
             brew install unixodbc
           fi
 
+          # Set up Python and uv (setup-python is needed here)
           pip install uv
+
+          # Install project dependencies
           uv venv
           uv pip install -e .[all]
 
-          # This syntax for setting an environment variable for a single command
-          # is compatible with bash (used on macOS and by default on Windows runners).
+          # Install Playwright browsers and build the executable
           PLAYWRIGHT_BROWSERS_PATH=0 uv run playwright install --with-deps chromium
-
           uv run pyinstaller cx.spec
 
       # --- Artifact Preparation (Platform-Agnostic) ---
@@ -104,7 +112,6 @@ jobs:
           VERSION=${{ github.ref_name }}
           OS_LOWER=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
 
-          # Use a case statement for clarity and extensibility
           case "$OS_LOWER" in
             windows*)
               OS_NAME="windows"
@@ -155,15 +162,10 @@ jobs:
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
-          # The path where all downloaded artifacts will be placed
           path: release-assets
 
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          # Use GitHub's automatic release note generation, which is superior
-          # to manually managing a CHANGELOG in the release body.
           generate_release_notes: true
-          # This glob will find all artifacts downloaded in the previous step
-          # and upload them to the release.
           files: release-assets/**/*
