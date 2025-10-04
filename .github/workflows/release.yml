@@ -29,7 +29,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
-      - name: Create virtual environment and install dependencies
+      - name: Install dependencies
         run: |
           uv venv
           uv pip install -e .[all]
@@ -39,34 +39,17 @@ jobs:
           source .venv/bin/activate
           python -m pytest
 
-  build:
-    name: Build Executable on ${{ matrix.os }}
+  build-linux:
+    name: Build Executable for Linux
     needs: test
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      matrix:
-        # Currently focused on Linux. To re-enable, add 'macos-latest' and 'windows-latest'.
-        os: [ubuntu-latest]
-        # os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cache Python dependencies
-        if: matrix.os != 'ubuntu-latest' # Caching is not used in the Docker step
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: ${{ runner.os }}-uv-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-uv-
-
-      # --- Platform-Specific Build Steps ---
-
-      - name: Build for Linux using Docker
-        if: matrix.os == 'ubuntu-latest'
+      - name: Build portable Linux binary using Docker
         run: |
           docker run --rm \
             -v "$(pwd)":/work -w /work \
@@ -83,70 +66,18 @@ jobs:
               uv run pyinstaller cx.spec \
             "
 
-      - name: Build for macOS / Windows
-        if: matrix.os == 'macos-latest' || matrix.os == 'windows-latest'
+      - name: Prepare and Archive Linux Executable
+        id: prepare_artifact
         shell: bash
         run: |
-          # Install dependencies needed on specific runners
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            brew install unixodbc
-          fi
-
-          # Set up Python and uv (setup-python is needed here)
-          pip install uv
-
-          # Install project dependencies
-          uv venv
-          uv pip install -e .[all]
-
-          # Install Playwright browsers and build the executable
-          PLAYWRIGHT_BROWSERS_PATH=0 uv run playwright install --with-deps chromium
-          uv run pyinstaller cx.spec
-
-      # --- Artifact Preparation (Platform-Agnostic) ---
-
-      - name: Prepare and Archive Executable
-        id: prepare_artifact
-        shell: bash # Use bash on all runners for consistent scripting
-        run: |
           VERSION=${{ github.ref_name }}
-          OS_LOWER=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
-
-          case "$OS_LOWER" in
-            windows*)
-              OS_NAME="windows"
-              ARCH="amd64"
-              EXT=".zip"
-              EXECUTABLE_PATH="dist/cx.exe"
-              ;;
-            macos*)
-              OS_NAME="macos"
-              ARCH="x86_64"
-              EXT=".tar.gz"
-              EXECUTABLE_PATH="dist/cx"
-              ;;
-            *)
-              OS_NAME="linux"
-              ARCH="x86_64"
-              EXT=".tar.gz"
-              EXECUTABLE_PATH="dist/cx"
-              ;;
-          esac
-
-          ARCHIVE_NAME="cx-${VERSION}-${OS_NAME}-${ARCH}${EXT}"
-
-          echo "Archiving ${EXECUTABLE_PATH} to ${ARCHIVE_NAME}..."
-
-          if [[ "$EXT" == ".zip" ]]; then
-            powershell -Command "Compress-Archive -Path '${EXECUTABLE_PATH}' -DestinationPath '${ARCHIVE_NAME}'"
-          else
-            tar -czvf "${ARCHIVE_NAME}" -C dist cx
-          fi
-
+          ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
+          echo "Archiving dist/cx to ${ARCHIVE_NAME}..."
+          tar -czvf "${ARCHIVE_NAME}" -C dist cx
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
 
-      - name: Upload artifact for release job
+      - name: Upload Linux artifact for release job
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ASSET_NAME }}
@@ -154,7 +85,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs: build-linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
