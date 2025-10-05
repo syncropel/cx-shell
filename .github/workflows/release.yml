@@ -12,16 +12,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install uv
         run: pip install uv
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
       - name: Install dependencies
         run: |
           uv venv
           uv pip install -e .[all]
+
       - name: Run Pytest
         run: |
           source .venv/bin/activate
@@ -31,7 +43,7 @@ jobs:
     name: Build PEX Executable for Linux
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 20 # PEX builds are much faster
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -45,55 +57,36 @@ jobs:
       - name: Install PEX and build dependencies
         run: |
           pip install pex uv
-          # We still need to install the project's dependencies to resolve them.
-          # We use a temporary venv for this to keep the runner clean.
           uv venv .pex-venv
           source .pex-venv/bin/activate
           uv pip install -e .[all]
 
       - name: Build PEX executable
         run: |
-          # Activate the venv so pex can find the installed packages
           source .pex-venv/bin/activate
-
-          # This is the core PEX build command
-          # -r: Specifies the requirements (all installed packages in this case)
-          # -c: Specifies the console script entry point (from pyproject.toml)
-          # -o: Specifies the output file name
-          # --no-strip-pex-env: Ensures the shebang line is portable
-          pex .[all] -o dist/cx.pex -c cx --no-strip-pex-env
+          # Build the PEX file directly with the name 'cx' for simplicity
+          pex .[all] -o dist/cx -c cx --no-strip-pex-env
 
       - name: Smoke Test the built PEX binary
         run: |
           echo "--- Verifying PEX binary was created ---"
-          ls -l dist/cx.pex
-          chmod +x dist/cx.pex
+          ls -l dist/cx
+          chmod +x dist/cx
 
-          echo "--- Running smoke test ---"
-          # We can run it directly on the runner, as it only depends on Python
-          ./dist/cx.pex --version
+          echo "--- Running smoke test on runner ---"
+          # PEX is portable, so we can test it directly on the runner's Python
+          ./dist/cx --version
           echo "--- Smoke test PASSED ---"
 
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
         shell: bash
         run: |
-          # The archive now contains the .pex file instead of the PyInstaller binary
           VERSION=${{ github.ref_name }}
           ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
 
-          # We create a wrapper script for a better user experience
-          mkdir -p bin
-          echo '#!/bin/sh' > bin/cx
-          echo 'DIR=$(cd "$(dirname "$0")" && pwd)' >> bin/cx
-          echo 'exec "$DIR/cx.pex" "$@"' >> bin/cx
-          chmod +x bin/cx
-
-          # Copy the PEX file into the bin directory
-          cp dist/cx.pex bin/
-
-          # Archive the 'bin' directory which contains the wrapper and the pex file
-          tar -czvf "${ARCHIVE_NAME}" -C bin .
+          # Archive the single 'cx' PEX executable
+          tar -czvf "${ARCHIVE_NAME}" -C dist cx
 
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
