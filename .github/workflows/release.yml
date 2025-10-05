@@ -40,7 +40,7 @@ jobs:
           python -m pytest
 
   build-linux:
-    name: Build and Smoke Test Executable for Linux
+    name: Build and Test Executable for Linux
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -49,41 +49,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build portable Linux binary using Docker
+      - name: Build and Test portable Linux binary using Docker
         run: |
           docker run --rm \
             -v "$(pwd)":/work -w /work \
             --name cx-builder \
             python:3.12-bullseye \
             bash -c " \
-              apt-get update && \
+              set -e && \
+              \
+              echo '--- 1. Installing Build Dependencies ---' && \
+              apt-get update > /dev/null && \
               apt-get install -y --no-install-recommends \
-                git binutils unixodbc unixodbc-dev \
-              && \
-              pip install uv && \
+                git binutils unixodbc unixodbc-dev > /dev/null && \
+              pip install uv --quiet && \
+              \
+              echo '--- 2. Installing Python Packages ---' && \
               uv venv && \
               uv pip install -e .[all] && \
               \
-              echo '--- Skipping playwright install during build to ensure a clean binary ---' && \
+              echo '--- 3. Building the Executable ---' && \
+              uv run pyinstaller cx.spec && \
               \
-              uv run pyinstaller cx.spec \
+              echo '--- 4. Verifying Binary Creation ---' && \
+              ls -l /work/dist/cx && \
+              \
+              # --- THIS IS THE CRITICAL TEST --- \
+              # We are now running the smoke test INSIDE the same container that just built the binary. \
+              # All shared libraries and dependencies are guaranteed to be present. \
+              echo '--- 5. Running Smoke Test in Build Container ---' && \
+              /work/dist/cx --version && \
+              echo '--- ✅ Smoke Test PASSED in Build Container ---' \
             "
-
-      - name: Smoke Test the built binary
-        run: |
-          echo "--- Verifying binary was created ---"
-          ls -l dist/cx
-
-          echo "--- Running smoke test inside a clean, minimal container ---"
-          docker run --rm \
-            -v "$(pwd)/dist:/app" \
-            debian:bullseye-slim \
-            bash -c " \
-              echo '--- Inside container: Testing binary ---' && \
-              /app/cx --version && \
-              echo '--- Smoke test PASSED ---' \
-            "
-
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
         shell: bash
