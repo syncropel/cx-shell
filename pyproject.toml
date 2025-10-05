@@ -92,3 +92,9 @@ where = ["src"]
 markers = [
     "network: marks tests that require a live network connection",
 ]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"cx_shell" = ["**/*"]
