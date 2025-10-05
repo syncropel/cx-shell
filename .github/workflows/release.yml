@@ -61,7 +61,7 @@ jobs:
           # -c: Specifies the console script entry point (from pyproject.toml)
           # -o: Specifies the output file name
           # --no-strip-pex-env: Ensures the shebang line is portable
-          pex . -o dist/cx.pex -c cx --no-strip-pex-env
+          pex .[all] -o dist/cx.pex -c cx --no-strip-pex-env
 
       - name: Smoke Test the built PEX binary
         run: |
