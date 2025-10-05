@@ -57,7 +57,7 @@ dependencies = [
 sql = [
     "sqlalchemy[asyncio]>=2.0.0",
     "aioodbc",
-    "trino[sqlalchemy]>=0.334.0",
+    "trino>=0.334.0",
 ]
 git = [
     "GitPython>=3.1.0",

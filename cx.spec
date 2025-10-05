@@ -15,8 +15,8 @@ added_files = [
 # features like MSSQL, Trino, and Git connectivity work in the packaged binary.
 hidden_imports = [
     'aioodbc',
-    'sqlalchemy_trino', # The package name for the Trino dialect
-    'GitPython'
+    'trino',
+    'git'
 ]
 
 block_cipher = None
