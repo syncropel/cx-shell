@@ -12,35 +12,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install uv
         run: pip install uv
-
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: ${{ runner.os }}-uv-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-uv-
-
       - name: Install dependencies
         run: |
           uv venv
           uv pip install -e .[all]
-
       - name: Run Pytest
         run: |
           source .venv/bin/activate
           python -m pytest
 
   build-linux:
-    name: Build and Test Executable for Linux
+    name: Build and Smoke Test Executable for Linux
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -51,43 +39,37 @@ jobs:
 
       - name: Build and Test portable Linux binary using Docker
         run: |
+          # --- THIS IS THE DEFINITIVE FIX ---
+          # 1. Use the explicit python:3.12-bullseye tag.
+          # 2. Correctly format the multi-line bash command.
           docker run --rm \
             -v "$(pwd)":/work -w /work \
             --name cx-builder \
             python:3.12-bullseye \
-            bash -c " \
-              set -e && \
-              \
+            bash -c "set -e && \
               echo '--- 1. Installing Build Dependencies ---' && \
               apt-get update > /dev/null && \
               apt-get install -y --no-install-recommends \
                 git binutils unixodbc unixodbc-dev > /dev/null && \
               pip install uv --quiet && \
-              \
               echo '--- 2. Installing Python Packages ---' && \
               uv venv && \
               uv pip install -e .[all] && \
-              \
               echo '--- 3. Building the Executable ---' && \
               uv run pyinstaller cx.spec && \
-              \
               echo '--- 4. Verifying Binary Creation ---' && \
               ls -l /work/dist/cx && \
-              \
-              # --- THIS IS THE CRITICAL TEST --- \
-              # We are now running the smoke test INSIDE the same container that just built the binary. \
-              # All shared libraries and dependencies are guaranteed to be present. \
               echo '--- 5. Running Smoke Test in Build Container ---' && \
               /work/dist/cx --version && \
-              echo '--- ✅ Smoke Test PASSED in Build Container ---' \
-            "
+              echo '--- ✅ Smoke Test PASSED in Build Container ---'"
+          # --- END FIX ---
+
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
         shell: bash
         run: |
           VERSION=${{ github.ref_name }}
           ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
-          echo "Archiving dist/cx to ${ARCHIVE_NAME}..."
           tar -czvf "${ARCHIVE_NAME}" -C dist cx
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
