@@ -13,7 +13,8 @@ class ExcelFormattingOptions(BaseModel):
         True, description="Automatically adjust column widths to fit content."
     )
     table_style: Optional[str] = Field(
-        "TableStyleMedium9", description="The name of the Excel table style to apply."
+        None,
+        description="The name of the Excel table style to apply. If None, no table is created.",
     )
     show_banded_rows: bool = Field(
         True, description="Toggle the banded row (stripe) effect in the table style."

@@ -11,6 +11,7 @@ from ..operations.pandas_ops import (
     RenameColumnsOp,
     AggregateToContextOp,
     ConvertColumnTypesOp,
+    ApplyColumnFormatsOp,
 )
 from .base import BaseTransformEngine
 
@@ -99,7 +100,7 @@ class PandasEngine(BaseTransformEngine):
                 # Save the generated summary dict into the main run_context
                 context[op_model.context_key] = summary_data
 
-            if isinstance(op_model, ConvertColumnTypesOp):
+            elif isinstance(op_model, ConvertColumnTypesOp):
                 log.info("Executing: convert_column_types")
 
                 if op_model.type_mapping:
@@ -137,4 +138,62 @@ class PandasEngine(BaseTransformEngine):
                                 "datetime_to_naive.failed", column=col, error=str(e)
                             )
                             # Continue on error to process other columns
+            elif isinstance(op_model, ApplyColumnFormatsOp):
+                log.info("Applying column formats...")
+
+                for column_name, rule in op_model.formats.items():
+                    if column_name not in data.columns:
+                        log.warning(
+                            "column_format.skip",
+                            column=column_name,
+                            reason="Column not found in DataFrame.",
+                        )
+                        continue
+
+                    # --- Step 1: Apply Rounding (if specified) ---
+                    # Rounding should happen before type casting to integer.
+                    if rule.round is not None:
+                        try:
+                            log.debug(
+                                "Rounding column",
+                                column=column_name,
+                                decimals=rule.round,
+                            )
+                            # Coerce errors to NaN to handle non-numeric values gracefully
+                            data[column_name] = pd.to_numeric(
+                                data[column_name], errors="coerce"
+                            ).round(rule.round)
+                        except Exception as e:
+                            log.error(
+                                "column_format.round.failed",
+                                column=column_name,
+                                error=str(e),
+                            )
+                            # Continue to the next rule/column even if rounding fails
+                            continue
+
+                    # --- Step 2: Apply Data Type Conversion (if specified) ---
+                    if rule.dtype:
+                        try:
+                            log.debug(
+                                "Casting column", column=column_name, dtype=rule.dtype
+                            )
+                            # Special handling for Pandas nullable integer type to preserve NaNs
+                            if rule.dtype.lower() == "int64":
+                                # Coerce to numeric first to handle potential strings, then cast
+                                numeric_series = pd.to_numeric(
+                                    data[column_name], errors="coerce"
+                                )
+                                data[column_name] = numeric_series.astype("Int64")
+                            else:
+                                data[column_name] = data[column_name].astype(rule.dtype)
+                        except Exception as e:
+                            log.error(
+                                "column_format.cast.failed",
+                                column=column_name,
+                                dtype=rule.dtype,
+                                error=str(e),
+                            )
+                            # Continu
+
         return data

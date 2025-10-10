@@ -86,6 +86,29 @@ class ConvertColumnTypesOp(BaseModel):
     )
 
 
+class ColumnFormatRule(BaseModel):
+    """Defines the formatting rules for a single column."""
+
+    dtype: Optional[str] = Field(
+        None, description="The target Pandas data type (e.g., 'Int64', 'float')."
+    )
+    round: Optional[int] = Field(
+        None, description="The number of decimal places to round to."
+    )
+
+
+class ApplyColumnFormatsOp(BaseOperation):
+    """
+    Applies rounding and data type casting to specified columns. This is ideal
+    for final presentation formatting before saving to a file.
+    """
+
+    type: Literal["apply_column_formats"]
+    formats: Dict[str, ColumnFormatRule] = Field(
+        ..., description="A dictionary mapping column names to their formatting rules."
+    )
+
+
 # A discriminated union of all possible Pandas operations.
 # When a new operation is created, it must be added to this list.
 AnyPandasOperation = Union[
@@ -95,4 +118,5 @@ AnyPandasOperation = Union[
     AddColumnOp,
     AggregateToContextOp,
     ConvertColumnTypesOp,
+    ApplyColumnFormatsOp,
 ]

@@ -91,6 +91,22 @@ jobs:
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
 
+      - name: Smoke Test the Final Archive
+        run: |
+          echo "--- Verifying final artifact: ${{ env.ASSET_NAME }} ---"
+
+          # Create a clean, temporary directory to simulate a user's machine
+          mkdir -p /tmp/test-install
+
+          # Unpack the archive into the test directory
+          tar -xzf ${{ env.ASSET_NAME }} -C /tmp/test-install
+
+          echo "--- Running smoke test on extracted artifact ---"
+          # Execute the wrapper script and ask for its version
+          /tmp/test-install/cx --version
+
+          echo "--- ✅ Final artifact smoke test PASSED ---"
+
       - name: Upload Linux artifact for release job
         uses: actions/upload-artifact@v4
         with:
