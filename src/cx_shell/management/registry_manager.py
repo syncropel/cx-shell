@@ -70,6 +70,21 @@ class RegistryManager:
             logger.error("registry.fetch.failed", url=url, error=str(e))
             return {}
 
+    async def get_application_metadata(
+        self, app_id: str, version: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetches the full metadata for a specific application from the registry,
+        optionally for a specific version.
+        """
+        apps = await self.get_available_applications()
+        for app in apps:
+            if app.get("id") == app_id:
+                # If a specific version is requested, we will need to handle that in the future.
+                # For now, we return the first match, which is the latest version.
+                return app
+        return None
+
     async def get_available_blueprints(self) -> List[Dict[str, Any]]:
         """Returns a list of available blueprints from the public blueprint registry."""
         registry = await self._fetch_and_cache_registry(

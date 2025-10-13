@@ -225,8 +225,13 @@ class CommandTransformer(Transformer):
     def compile_command_with_args(self, *named_args):
         return CompileCommand(named_args=dict(named_args))
 
-    def app_install(self, *named_args):
-        return AppCommand("install", args=dict(named_args))
+    def app_install(self, app_id_token=None):
+        """
+        Handles both `app install` and `app install <app-id>`.
+        The app_id_token will be a Lark Token if an ID is provided, otherwise it's None.
+        """
+        app_id = app_id_token.value if app_id_token else None
+        return AppCommand("install", args={"id": app_id})
 
     def session_list(self):
         return SessionCommand("list")
@@ -804,8 +809,10 @@ class CommandExecutor:
                 return self.session_manager.list_sessions()
             if isinstance(command, VariableCommand):
                 return self.variable_manager.list_variables(run_context.session)
-            if isinstance(command, AppCommand):
-                return await self.app_manager.list_installed_apps()
+            if isinstance(command, AppCommand) and command.subcommand == "list":
+                # This needs to be project-aware now.
+                project_root = Path.cwd()
+                return self.app_manager.list_apps(project_root)
             if isinstance(command, ProcessCommand):
                 return self.process_manager.list_processes()
             if isinstance(command, WorkspaceCommand):
@@ -841,15 +848,42 @@ class CommandExecutor:
             )
             command_prints_own_output = True
 
+        # elif isinstance(command, AppCommand):
+        #     command_prints_own_output = True
+        #     if command.subcommand == "install":
+        #         await self.app_manager.install(command.args)
+        #     elif command.subcommand == "uninstall":
+        #         await self.app_manager.uninstall(command.args["id"])
+        #     elif command.subcommand == "package":
+        #         await self.app_manager.package(command.args["path"])
+
         elif isinstance(command, AppCommand):
             command_prints_own_output = True
-            if command.subcommand == "install":
-                await self.app_manager.install(command.args)
-            elif command.subcommand == "uninstall":
-                await self.app_manager.uninstall(command.args["id"])
-            elif command.subcommand == "package":
-                await self.app_manager.package(command.args["path"])
+            project_root = Path.cwd()  # Assume command is run within a project
 
+            if command.subcommand == "install":
+                # The 'id' will be a string if an app was specified, or None for a bare 'install'
+                app_id_to_install = command.args.get("id")
+                await self.app_manager.install(project_root, app_id_to_install)
+
+            elif command.subcommand == "list":
+                # NOTE: This is not async in the new AppManager
+                self.app_manager.list_apps(project_root)
+
+            elif command.subcommand == "uninstall":
+                # This logic will need to be updated in a future sprint to be project-aware
+                # For now, we can leave the old global uninstall logic as a placeholder.
+                # await self.app_manager.uninstall(command.args["id"])
+                console.print(
+                    "[yellow]Project-specific uninstall is not yet implemented.[/yellow]"
+                )
+
+            elif command.subcommand == "package":
+                # This logic also needs to be updated to be project-aware
+                # await self.app_manager.package(command.args["path"])
+                console.print(
+                    "[yellow]Packaging is not yet implemented in the new architecture.[/yellow]"
+                )
         elif isinstance(command, SessionCommand):
             if command.subcommand == "status":
                 self.session_manager.show_status(run_context.session)
@@ -884,8 +918,9 @@ class CommandExecutor:
                 self.process_manager.stop_process(command.arg)
 
         elif isinstance(command, CompileCommand):
+            # The compile manager handles its own output, so it's a "fire and forget" call.
+            await self.compile_manager.run_compile(run_context, **command.named_args)
             command_prints_own_output = True
-            await self.compile_manager.run_compile(**command.named_args)
 
         elif isinstance(command, AgentCommand):
             command_prints_own_output = True

@@ -1,9 +1,11 @@
+# /.github/workflows/release.yaml
+
 name: Build and Release CX Shell
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*" # Trigger on any tag like v0.1.0
 
 jobs:
   test:
@@ -29,7 +31,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
-      - name: Install dependencies
+      - name: Install dependencies including test tools
         run: |
           uv venv
           uv pip install -e .[all]
@@ -40,43 +42,73 @@ jobs:
           python -m pytest
 
   build-linux:
-    name: Build PEX Executable for Linux
+    name: Build Standalone Linux Executable
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
+    # This container block is the key to glibc portability.
+    # It forces the build to happen in an older, stable Linux environment.
+    container:
+      image: python:3.12-slim-bullseye
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install PEX and build dependencies
+      - name: Install build tools inside container
         run: |
-          pip install pex uv
-          uv venv .pex-venv
-          source .pex-venv/bin/activate
-          uv pip install -e .[all]
+          apt-get update
+          apt-get install -y --no-install-recommends patchelf upx git
+          pip install pyinstaller uv
 
-      - name: Build PEX executable
+      - name: Install ONLY CORE application dependencies
         run: |
-          source .pex-venv/bin/activate
-          # Build the PEX file directly with the name 'cx' for simplicity
-          pex .[all] -o dist/cx -c cx --no-strip-pex-env
+          uv venv .pyinstaller-venv
+          source .pyinstaller-venv/bin/activate
+          # We explicitly install only the core package, not '[all]' extras.
+          # This is the key to creating a smaller binary by excluding
+          # heavy optional dependencies like pandas, sqlalchemy, etc.
+          uv pip install -e .
 
-      - name: Smoke Test the built PEX binary
+      - name: Build the executable with PyInstaller
         run: |
-          echo "--- Verifying PEX binary was created ---"
-          ls -l dist/cx
-          chmod +x dist/cx
+          source .pyinstaller-venv/bin/activate
+          # Use the .spec file for fine-grained control over the build process.
+          pyinstaller cx.spec --noconfirm
 
-          echo "--- Running smoke test on runner ---"
-          # PEX is portable, so we can test it directly on the runner's Python
+      - name: Verify build artifacts and check size
+        run: |
+          echo "--- Verifying binary was created in dist/ ---"
+          ls -lh dist/
+          # This acts as a safeguard against accidentally including heavy packages.
+          find dist/cx -type f -size +60M -exec echo "::error::Binary size exceeds 60MB limit!" \; -exec exit 1 \;
+          echo "--- Binary size is within acceptable limits. ---"
+
+      - name: Smoke Test the PyInstaller Binary
+        run: |
+          echo "--- Running smoke test on built binary ---"
+          # Create a clean, isolated home directory to simulate a new user's machine.
+          export HOME=/tmp/test-home
+          mkdir -p $HOME
+
+          echo "--- 1. Testing '--version' command ---"
           ./dist/cx --version
-          echo "--- Smoke test PASSED ---"
+
+          echo "--- 2. Testing 'init' command ---"
+          # The `init` command is the most critical first-run test, as it verifies
+          # that bundled assets were correctly included by PyInstaller.
+          ./dist/cx init
+
+          echo "--- Verifying that 'init' created files ---"
+          # Check that the command created the expected directory and a sample file.
+          ls -l $HOME/.cx/connections/
+          if [ ! -f "$HOME/.cx/connections/github.conn.yaml" ]; then
+            echo "::error::'cx init' failed to create sample connection file!"
+            exit 1
+          fi
+
+          echo "--- ✅ Binary smoke test PASSED ---"
 
       - name: Prepare and Archive Linux Executable
         id: prepare_artifact
@@ -85,48 +117,55 @@ jobs:
           VERSION=${{ github.ref_name }}
           ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
 
-          # Archive the single 'cx' PEX executable
+          # Create the final distributable archive.
           tar -czvf "${ARCHIVE_NAME}" -C dist cx
 
+          # Set environment variables for use in subsequent steps.
           echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
 
       - name: Smoke Test the Final Archive
         run: |
           echo "--- Verifying final artifact: ${{ env.ASSET_NAME }} ---"
-
-          # Create a clean, temporary directory to simulate a user's machine
           mkdir -p /tmp/test-install
-
-          # Unpack the archive into the test directory
           tar -xzf ${{ env.ASSET_NAME }} -C /tmp/test-install
 
           echo "--- Running smoke test on extracted artifact ---"
-          # Execute the wrapper script and ask for its version
           /tmp/test-install/cx --version
-
           echo "--- ✅ Final artifact smoke test PASSED ---"
 
       - name: Upload Linux artifact for release job
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ASSET_NAME }}
+          name: linux-artifact
           path: ${{ env.ASSET_PATH }}
+
+  # Placeholder for future macOS and Windows build jobs.
+  # build-macos:
+  #   ...
+  # build-windows:
+  #   ...
 
   release:
     name: Create GitHub Release
-    needs: build-linux
+    # This job will depend on all build jobs in the future (e.g., [build-linux, build-macos]).
+    needs: [build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-      - name: Download all built artifacts
+      - name: Download all built artifacts from previous jobs
         uses: actions/download-artifact@v4
         with:
           path: release-assets
 
-      - name: Create release and upload assets
+      - name: List downloaded artifacts for verification
+        run: ls -R release-assets
+
+      - name: Create release and upload all assets
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # This will upload all files found in the release-assets directory and its subdirectories.
           files: release-assets/**/*

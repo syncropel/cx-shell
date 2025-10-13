@@ -1,58 +1,162 @@
+# /src/cx_shell/management/app_manager.py
+
 import asyncio
 import json
 import shutil
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Optional
 
 import httpx
 import yaml
 from rich.console import Console
 from rich.table import Table
-from rich.markdown import Markdown
-from prompt_toolkit import PromptSession
 import structlog
 
-from ..engine.connector.config import ConnectionResolver, CX_HOME
+# Use the new project schemas and our refined naming conventions
+from cx_core_schemas.project import ProjectManifest, Lockfile, LockedPackage
+from ..utils import CX_HOME
 from .registry_manager import RegistryManager
 
 console = Console()
 logger = structlog.get_logger(__name__)
-APPS_DOWNLOAD_URL_TEMPLATE = (
-    "https://github.com/syncropel/applications/releases/download/{tag}/{asset_name}"
-)
-APPS_MANIFEST_FILE = CX_HOME / "apps.json"
+
+# --- NEW: Consistent paths inspired by Nix and pnpm ---
+# Global, immutable cache for downloaded application tarballs
+APPS_CACHE_DIR = CX_HOME / "store" / "app-cache"
+# Global, immutable store where unpacked applications live
+APPS_STORE_DIR = CX_HOME / "store" / "syncropel-apps"
 
 
 class AppManager:
-    """A service for discovering, installing, and managing Syncropel Applications."""
+    """
+    A service for managing Syncropel Applications as project-level dependencies,
+    inspired by modern package managers like uv and pnpm.
+    """
 
     def __init__(self, executor=None, cx_home_path: Optional[Path] = None):
         _cx_home = cx_home_path or CX_HOME
-        # Update the module-level constants used by the manager
-        global APPS_MANIFEST_FILE
-        APPS_MANIFEST_FILE = _cx_home / "apps.json"
+        # Update module-level constants
+        global APPS_CACHE_DIR, APPS_STORE_DIR
+        APPS_CACHE_DIR = _cx_home / "store" / "app-cache"
+        APPS_STORE_DIR = _cx_home / "store" / "syncropel-apps"
 
-        self.resolver = ConnectionResolver(cx_home_path=cx_home_path)
+        APPS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        APPS_STORE_DIR.mkdir(parents=True, exist_ok=True)
+
         self.registry_manager = RegistryManager()
-        self.executor = executor
-        _cx_home.mkdir(exist_ok=True, parents=True)
+        self.executor = executor  # Retained for potential future interactive features
 
-    def _load_local_manifest(self) -> Dict[str, Any]:
-        if not APPS_MANIFEST_FILE.exists():
-            return {"installed_apps": {}}
-        try:
-            return json.loads(APPS_MANIFEST_FILE.read_text())
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {"installed_apps": {}}
+    # --- Core Package Management Logic (New Architecture) ---
 
-    def _save_local_manifest(self, manifest_data: Dict[str, Any]):
-        json_content = json.dumps(manifest_data, indent=2)
-        APPS_MANIFEST_FILE.write_text(json_content)
+    async def install(self, project_root: Path, app_id: Optional[str]):
+        """
+        Primary entry point for the `cx app install` command.
+        - If app_id is provided, adds it as a new dependency.
+        - If app_id is None, syncs dependencies from the lockfile.
+        """
+        if app_id:
+            await self._install_package(project_root, app_id)
+        else:
+            await self._install_from_lockfile(project_root)
+
+    async def _install_from_lockfile(self, project_root: Path):
+        """
+        "Hydrates" a project's workspace by reading the lockfile, downloading
+        any missing dependencies, and creating the local symlink structure.
+        """
+        lockfile_path = project_root / "cx.lock.json"
+        if not lockfile_path.exists():
+            console.print(
+                "[yellow]No `cx.lock.json` file found. Use `cx app install <app-id>` to add a dependency.[/yellow]"
+            )
+            return
+
+        with console.status("Syncing project dependencies from lockfile...") as status:
+            lockfile = self._load_lockfile(lockfile_path)
+
+            download_tasks = []
+            for app_id, locked_pkg in lockfile.packages.items():
+                status.update(f"Checking {app_id}@{locked_pkg.version}...")
+                download_tasks.append(
+                    self._download_and_unpack_to_store(app_id, locked_pkg.version)
+                )
+            await asyncio.gather(*download_tasks)
+
+            status.update("Creating virtual workspace...")
+            assets_dir = project_root / ".cx" / "store"
+            if assets_dir.exists():
+                shutil.rmtree(assets_dir)
+            assets_dir.mkdir(parents=True)
+
+            for app_id, locked_pkg in lockfile.packages.items():
+                namespace, name = app_id.split("/")
+                source_path = APPS_STORE_DIR / namespace / name / locked_pkg.version
+                link_path = assets_dir / namespace / name
+
+                link_path.parent.mkdir(parents=True, exist_ok=True)
+                link_path.symlink_to(source_path, target_is_directory=True)
+
+        console.print("[bold green]✅ Project synced successfully.[/bold green]")
+
+    async def _install_package(self, project_root: Path, app_id: str):
+        """
+        Adds an application as a new dependency to a project.
+        """
+        console.print(f"Resolving and adding [cyan]{app_id}[/cyan] to project...")
+
+        manifest_path = project_root / "cx.project.yaml"
+        lockfile_path = project_root / "cx.lock.json"
+
+        manifest = self._load_project_manifest(manifest_path)
+        lockfile = self._load_lockfile(lockfile_path)
+
+        with console.status(f"Fetching metadata for '{app_id}' from registry..."):
+            app_meta = await self.registry_manager.get_application_metadata(app_id)
+            if not app_meta:
+                console.print(
+                    f"[bold red]Error:[/bold red] Application '{app_id}' not found in registry."
+                )
+                return
+
+        version = app_meta["version"]
+
+        # The download function will now return the checksum of the downloaded archive.
+        integrity_hash = await self._download_and_unpack_to_store(app_id, version)
+
+        # Correctly initialize the nested Pydantic model if it's None.
+        if manifest.syncropel is None:
+            from cx_core_schemas.project import SyncropelSpec
+
+            manifest.syncropel = SyncropelSpec()
+
+        # Use a caret for the version constraint in the human-readable manifest.
+        manifest.syncropel.apps[app_id] = f"^{version}"
+
+        # Store the exact, resolved information in the machine-readable lockfile.
+        lockfile.packages[app_id] = LockedPackage(
+            version=version,
+            source="registry",
+            integrity=f"sha256-{integrity_hash}",  # Use the hash returned by the download function.
+        )
+
+        self._save_project_manifest(manifest_path, manifest)
+        self._save_lockfile(lockfile_path, lockfile)
+
+        console.print(
+            f"Added [cyan]{app_id}@{version}[/cyan] to project dependencies and updated lockfile."
+        )
+
+        # After adding the new package, re-sync the entire project to ensure all
+        # symlinks are correctly in place.
+        await self._install_from_lockfile(project_root)
+
+    # --- Other Commands ---
 
     async def search(self, query: Optional[str] = None):
         """Searches the public application registry."""
+        # This method's logic remains unchanged.
         with console.status("Fetching public application registry..."):
             apps = await self.registry_manager.get_available_applications()
         if not apps:
@@ -60,12 +164,10 @@ class AppManager:
                 "[yellow]No applications found in the public registry.[/yellow]"
             )
             return
-
         table = Table(title="Publicly Available Applications")
         table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Version", style="magenta")
         table.add_column("Description", overflow="fold")
-
         for app in apps:
             if (
                 not query
@@ -75,233 +177,139 @@ class AppManager:
                 table.add_row(app.get("id"), app.get("version"), app.get("description"))
         console.print(table)
 
-    async def list_installed_apps(self):
-        """Lists locally installed applications."""
-        manifest = self._load_local_manifest()
-        apps = manifest.get("installed_apps", {})
+    def list_apps(self, project_root: Path):
+        """Lists the applications declared in the project's manifest."""
+        # This method now reads from cx.project.yaml
+        manifest_path = project_root / "cx.project.yaml"
+        if not manifest_path.exists():
+            console.print("Not inside a Syncropel project (missing `cx.project.yaml`).")
+            return
+
+        manifest = self._load_project_manifest(manifest_path)
+        apps = (
+            manifest.syncropel.apps
+            if manifest.syncropel and manifest.syncropel.apps
+            else {}
+        )
+
         if not apps:
             console.print(
-                "No applications are currently installed. Use `app search` to discover new ones."
+                "No applications are declared as dependencies in this project."
             )
             return
 
-        table = Table(title="Locally Installed Applications")
-        table.add_column("ID", style="cyan")
-        table.add_column("Version", style="magenta")
-        table.add_column("Asset Count", style="green", justify="right")
-        for app_id, details in apps.items():
-            table.add_row(
-                app_id,
-                details.get("version", "N/A"),
-                str(len(details.get("assets", []))),
-            )
+        table = Table(title="Project Application Dependencies")
+        table.add_column("Application ID", style="cyan")
+        table.add_column("Version Constraint", style="magenta")
+        for app_id, version in apps.items():
+            table.add_row(app_id, version)
         console.print(table)
 
-    async def install(self, args: Dict[str, Any], no_interactive: bool = False):
-        """Installs an application from a specified source using named arguments."""
+    # --- Helper and Utility Methods ---
 
-        # --- NEW, ROBUST LOGIC ---
-        source_id = args.get("--id")
-        source_path = args.get("--path")
-        source_url = args.get("--url")
-        # --- END NEW LOGIC ---
+    async def _download_and_unpack_to_store(self, app_id: str, version: str) -> str:
+        """
+        Idempotent function to download, verify, and unpack an application
+        into the global immutable store. Returns the sha256 hexdigest of the archive.
+        """
+        namespace, name = app_id.split("/")
+        final_path = APPS_STORE_DIR / namespace / name / version
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            archive_path = tmp_path / "app.tar.gz"
+        # If the application is already in our global store, the work is done. Return immediately.
+        if final_path.exists():
+            return ""  # Return empty string as hash is not needed for existing packages
 
-            if source_path:
-                console.print(f"Installing from local file: [cyan]{source_path}[/cyan]")
-                shutil.copy(source_path, archive_path)
-            elif source_url:
-                with console.status(
-                    f"Downloading application from {source_url[:70]}..."
-                ):
-                    async with httpx.AsyncClient(
-                        follow_redirects=True, timeout=120.0
-                    ) as client:
-                        response = await client.get(source_url)
-                        response.raise_for_status()
-                    archive_path.write_bytes(response.content)
-            elif source_id:
-                with console.status(f"Resolving '{source_id}' from registry..."):
-                    apps = await self.registry_manager.get_available_applications()
-                    app_meta = next(
-                        (app for app in apps if app.get("id") == source_id), None
-                    )
-                if not app_meta:
-                    console.print(
-                        f"[bold red]Error:[/bold red] Application '{source_id}' not found in the public registry."
-                    )
-                    return
-                namespace, name = source_id.split("/")
-                version = app_meta["version"]
-                tag = f"{namespace}-{name}-v{version}"
-                asset_name = f"{name}-v{version}.tar.gz"
-                download_url = APPS_DOWNLOAD_URL_TEMPLATE.format(
-                    tag=tag, asset_name=asset_name
+        with console.status(f"Downloading {app_id}@{version}...") as status:
+            app_meta = await self.registry_manager.get_application_metadata(
+                app_id, version
+            )
+            if not app_meta:
+                raise ValueError(f"Could not find metadata for {app_id}@{version}")
+
+            source_repo = app_meta.get("repository")
+            if not source_repo:
+                raise ValueError(
+                    f"Registry entry for '{app_id}' is missing the 'repository' field."
                 )
 
-                with console.status(f"Downloading {source_id}@{version}..."):
+            tag_name = f"v{version}"
+            repo_name = source_repo.split("/")[1]
+            asset_name = f"{repo_name}-{tag_name}.tar.gz"
+            download_url = f"https://github.com/{source_repo}/releases/download/{tag_name}/{asset_name}"
+
+            status.update(f"Downloading from {download_url}")
+
+            # Implement a robust retry mechanism for transient network errors.
+            max_retries = 3
+            archive_bytes = None
+            for attempt in range(max_retries):
+                try:
                     async with httpx.AsyncClient(
                         follow_redirects=True, timeout=120.0
                     ) as client:
                         response = await client.get(download_url)
                         response.raise_for_status()
-                    archive_path.write_bytes(response.content)
-            else:
-                console.print(
-                    "[bold red]Error:[/bold red] Install source not specified. Use --id, --path, or --url."
-                )
-                return
+                    archive_bytes = response.content
+                    break  # Success, exit the loop
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404 and attempt < max_retries - 1:
+                        wait_time = 2 ** (attempt + 1)  # Exponential backoff: 2s, 4s
+                        status.update(
+                            f"Asset not found (404), likely propagation delay. Retrying in {wait_time}s..."
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        raise  # Re-raise the error on the final attempt or for non-404 errors.
 
-            with console.status("Unpacking application assets..."):
+            if archive_bytes is None:
+                raise IOError(
+                    f"Failed to download {app_id}@{version} after {max_retries} attempts."
+                )
+
+            import hashlib
+
+            integrity_hash = hashlib.sha256(archive_bytes).hexdigest()
+
+        with console.status(f"Installing {app_id}@{version} to global store..."):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                archive_path = tmp_path / asset_name
+                archive_path.write_bytes(archive_bytes)
+
+                unpacked_dir = tmp_path / "unpacked"
                 with tarfile.open(archive_path, "r:gz") as tar:
-                    tar.extractall(path=tmp_path)
+                    tar.extractall(path=unpacked_dir)
 
-            app_manifest_path = next(tmp_path.rglob("app.cx.yaml"), None)
-            if not app_manifest_path:
-                console.print(
-                    "[bold red]Error:[/bold red] Application package is invalid: missing 'app.cx.yaml'."
-                )
-                return
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(unpacked_dir, final_path)
 
-            app_source_dir = app_manifest_path.parent
-            with open(app_manifest_path, "r") as f:
-                app_manifest = yaml.safe_load(f)
+        logger.info("Installed app to global store.", path=str(final_path))
+        return integrity_hash
 
-            app_id = f"{app_manifest.get('namespace', 'unknown')}/{app_manifest.get('name', 'unknown')}"
-            version = app_manifest.get("version", "0.0.0")
+    # --- Manifest/Lockfile I/O Helpers ---
 
-            local_manifest = self._load_local_manifest()
-            if app_id in local_manifest["installed_apps"]:
-                console.print(
-                    f"[yellow]Application '{app_id}' is already installed.[/yellow]"
-                )
-                return
+    def _load_project_manifest(self, path: Path) -> ProjectManifest:
+        if not path.exists():
+            return ProjectManifest()
+        data = yaml.safe_load(path.read_text())
+        return ProjectManifest.model_validate(data or {})
 
-            await self._install_assets_and_run_wizard(
-                app_id, version, app_manifest, app_source_dir, no_interactive
+    def _save_project_manifest(self, path: Path, manifest: ProjectManifest):
+        path.write_text(
+            yaml.dump(
+                manifest.model_dump(
+                    mode="json", exclude_none=True, exclude_defaults=True
+                ),
+                sort_keys=False,
             )
-
-    async def _install_assets_and_run_wizard(
-        self, app_id, version, app_manifest, app_source_dir, no_interactive
-    ):
-        """Helper to perform the installation after downloading and unpacking."""
-        with console.status("Resolving blueprint dependencies..."):
-            for blueprint_id in app_manifest.get("dependencies", {}).get(
-                "blueprints", []
-            ):
-                try:
-                    await asyncio.to_thread(
-                        self.resolver.load_blueprint_by_id, blueprint_id
-                    )
-                except Exception as e:
-                    console.print(
-                        f"[bold red]Failed to resolve blueprint dependency '{blueprint_id}': {e}[/bold red]"
-                    )
-                    return
-
-        with console.status("Installing application assets..."):
-            installed_assets = []
-            for asset_type in ["flows", "queries", "scripts", "templates"]:
-                source_dir = app_source_dir / asset_type
-                if source_dir.is_dir():
-                    target_dir = CX_HOME / asset_type
-                    target_dir.mkdir(exist_ok=True)
-                    for item in source_dir.iterdir():
-                        shutil.copy(item, target_dir)
-                        installed_assets.append(f"{asset_type}/{item.name}")
-
-        local_manifest = self._load_local_manifest()
-        local_manifest["installed_apps"][app_id] = {
-            "version": version,
-            "assets": installed_assets,
-            "dependencies": app_manifest.get("dependencies", {}),
-        }
-        self._save_local_manifest(local_manifest)
-        console.print(
-            "  [green]✓[/green] All assets installed and tracked in manifest."
         )
 
-        if not no_interactive and self.executor:
-            required_conns = app_manifest.get("required_connections", [])
-            if required_conns:
-                console.print("\n[bold]Application Setup: Required Connections[/bold]")
-                for conn_req in required_conns:
-                    console.print(
-                        f"\n--- Setting up connection: [bold cyan]{conn_req['id']}[/bold cyan] ---"
-                    )
-                    console.print(f"[dim]{conn_req['description']}[/dim]")
-                    await self.executor.connection_manager.create_interactive(
-                        preselected_blueprint_id=conn_req["blueprint"]
-                    )
+    def _load_lockfile(self, path: Path) -> Lockfile:
+        if not path.exists():
+            return Lockfile(metadata={"version": "1"}, packages={})
+        data = json.loads(path.read_text())
+        return Lockfile.model_validate(data)
 
-        console.print(
-            f"\n[bold green]✓[/bold green] Successfully installed application [cyan]{app_id}@{version}[/cyan]."
-        )
-
-        readme_path = app_source_dir / "README.md"
-        if readme_path.exists():
-            console.print("\n--- Application README ---")
-            console.print(Markdown(readme_path.read_text()))
-
-    async def uninstall(self, app_id: str):
-        """Uninstalls an application and removes its assets."""
-        manifest = self._load_local_manifest()
-        app_to_remove = manifest.get("installed_apps", {}).get(app_id)
-        if not app_to_remove:
-            console.print(
-                f"[bold red]Error:[/bold red] Application '{app_id}' is not installed."
-            )
-            return
-
-        console.print(
-            "The following assets will be [bold red]DELETED[/bold red] from your `~/.cx` directory:"
-        )
-        for asset in app_to_remove.get("assets", []):
-            console.print(f"- {asset}")
-
-        session = PromptSession()
-        confirmed = await session.prompt_async(
-            f"\nAre you sure you want to uninstall '{app_id}'? [y/n]: "
-        )
-        if confirmed.lower() == "y":
-            with console.status(f"Uninstalling {app_id}..."):
-                for asset_path_str in app_to_remove.get("assets", []):
-                    full_path = CX_HOME / asset_path_str
-                    if full_path.exists():
-                        full_path.unlink()
-                del manifest["installed_apps"][app_id]
-                self._save_local_manifest(manifest)
-            console.print(
-                f"[bold green]✓[/bold green] Application '{app_id}' has been uninstalled."
-            )
-        else:
-            console.print("[yellow]Uninstallation cancelled.[/yellow]")
-
-    async def package(self, app_path_str: str):
-        """Packages a local application directory into a distributable archive."""
-        app_path = Path(app_path_str).resolve()
-        manifest_path = app_path / "app.cx.yaml"
-        if not manifest_path.exists():
-            console.print(
-                f"[bold red]Error:[/bold red] Manifest 'app.cx.yaml' not found in '{app_path}'."
-            )
-            return
-
-        with open(manifest_path, "r") as f:
-            manifest = yaml.safe_load(f)
-        name = manifest.get("name", app_path.name)
-        version = manifest.get("version", "0.0.0")
-        archive_name = f"{name}-v{version}.tar.gz"
-
-        with console.status(f"Creating package '{archive_name}'..."):
-            with tarfile.open(archive_name, "w:gz") as tar:
-                # Add the contents of the app_path directory to the archive's root.
-                for item in app_path.iterdir():
-                    tar.add(item, arcname=item.name)
-
-        console.print(
-            f"[bold green]✓[/bold green] Successfully created application package: [cyan]{archive_name}[/cyan]"
-        )
+    def _save_lockfile(self, path: Path, lockfile: Lockfile):
+        path.write_text(lockfile.model_dump_json(indent=2))

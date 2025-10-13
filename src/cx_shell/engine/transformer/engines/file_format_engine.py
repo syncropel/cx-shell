@@ -1,9 +1,12 @@
 import io
+import json
 from typing import Any, Dict, List
 
 import pandas as pd
 import structlog
 from pydantic import TypeAdapter
+import datetime
+import numpy as np
 
 from ..operations.file_format_ops import AnyFileFormatOperation, SaveOperation
 from ..vfs_client import AbstractVfsClient
@@ -11,6 +14,30 @@ from .base import BaseTransformEngine
 
 logger = structlog.get_logger(__name__)
 AnyFileFormatOperationAdapter = TypeAdapter(AnyFileFormatOperation)
+
+
+def custom_json_serializer(obj):
+    """
+    Custom JSON serializer to handle types that the default encoder can't,
+    such as datetimes, Timestamps, and numpy types.
+    """
+    if isinstance(obj, (datetime.datetime, datetime.date, pd.Timestamp)):
+        # Convert datetime-like objects to ISO 8601 format string.
+        return obj.isoformat()
+
+    if pd.isna(obj):
+        # Convert pandas' NaT or numpy's NaN to null in JSON.
+        return None
+
+    if isinstance(obj, (np.integer, np.int64)):
+        return int(obj)
+
+    if isinstance(obj, (np.floating, np.float64)):
+        return float(obj)
+
+    # If it's a type we haven't handled, raise an error to let the
+    # default encoder deal with it (or fail, so we know we need to add a handler).
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 
 class FileFormatEngine(BaseTransformEngine):
@@ -72,9 +99,30 @@ class FileFormatEngine(BaseTransformEngine):
                 elif op_model.format == "csv":
                     data.to_csv(output_buffer, index=False, **format_options)
                 elif op_model.format == "json":
-                    data.to_json(
-                        output_buffer, orient="records", indent=2, **format_options
+                    # --- START OF FIXES ---
+
+                    # Step 1 (NEW): Before converting to dict, replace special pandas/numpy
+                    # nulls with Python's None. This is the most robust way to handle NaT.
+                    # We create a copy to avoid modifying the DataFrame for subsequent steps.
+                    data_for_json = data.replace({pd.NaT: None, np.nan: None})
+
+                    # Step 2: Convert the cleaned DataFrame to a list of Python dictionaries.
+                    records = data_for_json.to_dict(orient="records")
+
+                    ensure_ascii = format_options.get("force_ascii", False)
+
+                    # Step 3: Dump to a JSON string with the crucial `allow_nan=False`.
+                    json_string = json.dumps(
+                        records,
+                        indent=2,
+                        default=custom_json_serializer,
+                        ensure_ascii=ensure_ascii,
+                        allow_nan=False,  # <--- THIS IS THE CRITICAL FIX FOR NaN
                     )
+
+                    # --- END OF FIXES ---
+
+                    output_buffer.write(json_string.encode("utf-8"))
                 elif op_model.format == "parquet":
                     data.to_parquet(output_buffer, index=False, **format_options)
 

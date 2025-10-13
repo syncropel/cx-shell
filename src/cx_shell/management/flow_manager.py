@@ -34,20 +34,13 @@ class FlowManager:
 
     def _get_search_paths(self) -> List[Tuple[str, Path]]:
         """
-        Defines the prioritized search paths for all runnable assets by querying the WorkspaceManager.
-        This now includes multiple subdirectories per root.
-        Returns a list of (namespace, path_object) tuples.
+        Defines the prioritized search paths for all runnable assets by querying the
+        WorkspaceManager and checking for project-local application dependencies.
         """
         search_paths = []
         all_roots = self.workspace_manager.get_roots()
 
-        # --- START OF STRATEGIC DEBUG LOG ---
-        logger.debug(
-            "flow_manager.get_search_paths.discovered_roots",
-            roots=[str(p) for p in all_roots],
-        )
-        # --- END OF STRATEGIC DEBUG LOG ---
-
+        # 1. Add the main workspace roots (unchanged)
         for root_path in all_roots:
             namespace = "system" if ".cx" in str(root_path) else root_path.name
             for subdir in self.asset_subdirs:
@@ -55,6 +48,31 @@ class FlowManager:
                 if asset_dir.is_dir():
                     search_paths.append((namespace, asset_dir))
 
+        # --- START OF DEFINITIVE FIX ---
+        # 2. Add the project-local dependency store, if it exists
+        #    This makes the manager "dependency-aware".
+        current_project_root = self.workspace_manager.find_project_root_for_file(
+            Path.cwd()
+        )
+        if current_project_root:
+            project_assets_dir = current_project_root / ".cx" / "store"
+            if project_assets_dir.is_dir():
+                # Scan for installed apps (e.g., system/toolkit)
+                for namespace_dir in project_assets_dir.iterdir():
+                    if not namespace_dir.is_dir():
+                        continue
+                    for app_dir in namespace_dir.iterdir():
+                        app_namespace = f"{namespace_dir.name}/{app_dir.name}"
+                        # Scan for asset types within the app (flows, notebooks)
+                        for subdir in self.asset_subdirs:
+                            asset_dir_in_app = app_dir / subdir
+                            if asset_dir_in_app.is_dir():
+                                search_paths.append((app_namespace, asset_dir_in_app))
+        # --- END OF DEFINITIVE FIX ---
+
+        logger.debug(
+            "flow_manager.search_paths.final", paths=[str(p[1]) for p in search_paths]
+        )
         return search_paths
 
     def list_flows(self) -> List[Dict[str, str]]:

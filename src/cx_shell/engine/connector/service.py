@@ -176,3 +176,40 @@ class ConnectorService:
             )
             # Re-raise the exception to be handled by the caller
             raise
+
+    async def run_action_by_name(
+        self,
+        run_context: "RunContext",
+        connection_source: str,
+        action_name: str,
+        action_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """A helper to run a single, simple action by name."""
+        from cx_core_schemas.connector_script import (
+            ConnectorStep,
+            ReadContentAction,
+        )  # Local import
+
+        # This is a simplified version for known, simple actions.
+        # A more robust version would dynamically build the action model.
+        if action_name == "read_content":
+            action_model = ReadContentAction(action="read_content", **action_params)
+        else:
+            raise NotImplementedError(
+                f"Direct execution of action '{action_name}' is not supported."
+            )
+
+        step = ConnectorStep(
+            id=f"internal_run_{action_name}",
+            connection_source=connection_source,
+            run=action_model,
+        )
+
+        # We need a context for the engine, but it can be minimal
+        temp_run_context = run_context.model_copy(deep=False)
+
+        results = await run_context.services.script_engine.run_script_model(
+            context=temp_run_context,
+            script_data={"name": "Internal Script", "steps": [step.model_dump()]},
+        )
+        return results[step.id]

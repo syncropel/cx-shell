@@ -24,6 +24,7 @@ from cx_shell.interactive.session import SessionState
 from cx_shell.management.upgrade_manager import UpgradeManager
 from cx_shell.state import APP_STATE
 from .utils import get_assets_root
+from .management.shell_manager import ShellManager
 
 # --- THIS IS THE NEW, CRITICAL BLOCK ---
 # We perform the late imports needed for Pydantic's model_rebuild here,
@@ -120,7 +121,15 @@ def _reconstruct_command_string(command_name: str, args: list[str]) -> str:
 #         "CLI wrapper constructing command string for executor", command_string=command
 #     )
 #     temp_state = SessionState(is_interactive=False)
-#     executor = CommandExecutor(temp_state)
+
+#     # --- START OF DEFINITIVE FIX ---
+#     # Import the handler and instantiate it for non-interactive runs.
+#     from cx_shell.interactive.output_handler import RichConsoleHandler
+
+#     output_handler = RichConsoleHandler()
+#     executor = CommandExecutor(temp_state, output_handler)
+#     # --- END OF DEFINITIVE FIX ---
+
 #     piped_input = None
 #     if not sys.stdin.isatty():
 #         content = sys.stdin.read()
@@ -132,6 +141,7 @@ def _reconstruct_command_string(command_name: str, args: list[str]) -> str:
 #     asyncio.run(executor.execute(command, piped_input=piped_input))
 
 
+# The new, correct function for src/cx_shell/cli.py
 def _run_command_string(command: str):
     """Instantiates a temporary executor and runs a single command string."""
     logger.info(
@@ -139,13 +149,18 @@ def _run_command_string(command: str):
     )
     temp_state = SessionState(is_interactive=False)
 
-    # --- START OF DEFINITIVE FIX ---
-    # Import the handler and instantiate it for non-interactive runs.
+    # --- START OF DEFINITIVE, CORRECTED FIX ---
     from cx_shell.interactive.output_handler import RichConsoleHandler
 
-    output_handler = RichConsoleHandler()
-    executor = CommandExecutor(temp_state, output_handler)
-    # --- END OF DEFINITIVE FIX ---
+    # 1. Instantiate the CommandExecutor first, passing a temporary `None` for the handler.
+    executor = CommandExecutor(temp_state, output_handler=None)
+
+    # 2. Now, instantiate the RichConsoleHandler and pass the fully built executor to it.
+    output_handler = RichConsoleHandler(executor=executor)
+
+    # 3. Finally, assign the handler back to the executor to complete the loop.
+    executor.output_handler = output_handler
+    # --- END OF DEFINITIVE, CORRECTED FIX ---
 
     piped_input = None
     if not sys.stdin.isatty():
@@ -155,6 +170,7 @@ def _run_command_string(command: str):
                 piped_input = json.loads(content)
             except json.JSONDecodeError:
                 piped_input = content
+
     asyncio.run(executor.execute(command, piped_input=piped_input))
 
 
@@ -480,3 +496,22 @@ def install():
     # Assume the command is run from the project root
     project_root = Path.cwd()
     manager.install_project_dependencies(project_root)
+
+
+@app.command()
+@handle_exceptions
+def shell():
+    """
+    Launches the interactive Syncropel shell for the current project.
+
+    If a cx.project.yaml with an `environment` is found, it will activate a
+    hermetic shell using Nix. Otherwise, it starts a standard session.
+    """
+    # The command is always run in the context of the current working directory.
+    project_root = Path.cwd()
+
+    # We create a new instance of the manager for this single operation.
+    shell_manager = ShellManager()
+
+    # Delegate the entire activation logic to the manager.
+    shell_manager.activate_shell(project_root)

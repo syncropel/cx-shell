@@ -1,42 +1,54 @@
+# /cx.spec
+
 # -*- mode: python ; coding: utf-8 -*-
 
 """
 PyInstaller spec file for the Syncropel Shell (`cx`).
-This is configured for a true single-file executable build.
+This is configured for a true single-file executable build with minimal dependencies.
 """
 
+# Explicitly add non-code assets that MUST be bundled.
 added_files = [
     ('src/cx_shell/assets', 'cx_shell/assets'),
     ('src/cx_shell/interactive/grammar', 'cx_shell/interactive/grammar')
 ]
 
-# Explicitly tell PyInstaller to bundle all modules that are imported
-# dynamically or as part of optional dependency sets. This ensures that
-# features like MSSQL, Trino, and Git connectivity work in the packaged binary.
+# Explicitly exclude heavy, optional dependencies that will be downloaded on-demand.
 hidden_imports = [
-    'aioodbc',
-    'trino',
-    'git'
+    # We might need a few tricky-to-find imports here, but start with none.
 ]
 
-block_cipher = None
+# A list of modules to explicitly EXCLUDE from the binary. This is the key to slimming it down.
+excluded_modules = [
+    'pandas',
+    'numpy',
+    'sqlalchemy',
+    'aioodbc',
+    'trino',
+    'lancedb',
+    'fastembed',
+    'tiktoken',
+    'instructor',
+    'playwright',
+    # Exclude test libraries
+    'pytest',
+    'pytest_mock',
+]
 
 a = Analysis(
     ['src/cx_shell/main.py'],
     pathex=[],
     binaries=[],
     datas=added_files,
-    hiddenimports=hidden_imports, # Use the hiddenimports list here
+    hiddenimports=hidden_imports,
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excluded_modules, # <-- USE THE EXCLUSION LIST HERE
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
+    noarchive=False
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(
     pyz,
@@ -46,7 +58,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    runtime_tmpdir=None,
+    upx=True, # Use UPX to compress the final binary
     console=True,
+    runtime_tmpdir=None
 )

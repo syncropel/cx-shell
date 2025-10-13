@@ -79,9 +79,8 @@ open_args: (JINJA_BLOCK | ARG | named_argument)+
 
 app_command: "app" app_subcommand
 app_subcommand: "list" -> app_list
-    | "install" named_argument+ -> app_install
+    | "install" [ARG] -> app_install
     | "uninstall" ARG -> app_uninstall
-    | "sync" -> app_sync
     | "package" ARG -> app_package
     | "search" [ARG] -> app_search
 

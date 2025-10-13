@@ -168,6 +168,67 @@ class BaseSqlAlchemyStrategy(BaseConnectorStrategy):
         finally:
             await engine.dispose()
 
+    # async def execute_query(
+    #     self,
+    #     query: str,
+    #     params: Dict,
+    #     connection: "Connection",
+    #     secrets: Dict[str, Any],
+    # ) -> List[Dict[str, Any]]:
+    #     """
+    #     Executes a SQL query, ensuring the connection engine is created and
+    #     disposed of correctly within a managed context.
+    #     """
+    #     log = logger.bind(connection_id=connection.id, dialect=self.dialect_driver)
+    #     log.info("sqlalchemy.execute_query.begin")
+
+    #     # --- THIS IS THE DEFINITIVE FIX ---
+    #     # We now use this strategy's own get_client as an async context manager.
+    #     # This guarantees that the engine and its connection pool are disposed of
+    #     # as soon as the 'with' block is exited.
+    #     try:
+    #         async with self.get_client(connection, secrets) as engine:
+    #             final_query = query
+    #             final_params = params.copy()
+    #             list_params = {k: v for k, v in final_params.items() if isinstance(v, list)}
+
+    #             if list_params:
+    #                 # ... (the IN clause expansion logic remains the same)
+    #                 for key, values in list_params.items():
+    #                     if not values:
+    #                         final_query = final_query.replace(f"(:{key})", "(NULL)")
+    #                         del final_params[key]
+    #                         continue
+    #                     new_param_names = [f"{key}_{i}" for i in range(len(values))]
+    #                     placeholders = ", ".join([f":{p}" for p in new_param_names])
+    #                     final_query = final_query.replace(f"(:{key})", f"({placeholders})")
+    #                     del final_params[key]
+    #                     final_params.update(zip(new_param_names, values))
+
+    #             stmt = text(final_query)
+    #             log.info("sqlalchemy.execute_query.executing", final_params=final_params)
+
+    #             async with engine.connect() as conn:
+    #                 result_proxy = await conn.execute(stmt, final_params)
+    #                 if result_proxy.returns_rows:
+    #                     mapping_results = result_proxy.mappings().all()
+    #                     log.info(
+    #                         "sqlalchemy.execute_query.success",
+    #                         row_count=len(mapping_results),
+    #                     )
+    #                     dict_results = [dict(row) for row in mapping_results]
+    #                     return safe_serialize(dict_results)
+    #                 else:
+    #                     log.info(
+    #                         "sqlalchemy.execute_query.success_no_rows",
+    #                         row_count=result_proxy.rowcount,
+    #                     )
+    #                     return []
+    #     except Exception as e:
+    #         log.error("sqlalchemy.execute_query.failed", error=str(e), exc_info=True)
+    #         raise IOError(f"Query execution failed: {e}") from e
+    #     # --- END FIX ---
+
     async def browse_path(
         self, path_parts: List[str], connection: "Connection", secrets: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
