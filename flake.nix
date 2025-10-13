@@ -130,7 +130,19 @@
         let pkgs = import nixpkgs { inherit system; };
         in {
           default = pkgs.mkShell {
-            buildInputs = with pkgs; [ uv python312 git docker kubectl ];
+            buildInputs = with pkgs; [
+              # Tools
+              uv
+              python312
+              git
+              docker
+              kubectl
+              # Runtime Libraries needed by Python packages
+              stdenv.cc.cc.lib
+              zlib
+              xz
+              unixODBC
+            ];
             shellHook = ''
               export PS1="\n\[\033[1;32m\][nix-cx-shell]\[\033[0m\] \[\033[1;34m\]\w\[030m\]\n\$ "
               echo "--- CX Shell Development Environment ---"
