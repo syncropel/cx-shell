@@ -42,72 +42,56 @@ jobs:
           python -m pytest
 
   build-linux:
-    name: Build Standalone Linux Executable
+    name: Build Standalone Linux Executable (via Nix)
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    # This container block is the key to glibc portability.
-    # It forces the build to happen in an older, stable Linux environment.
-    container:
-      image: python:3.12-slim-bullseye
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install build tools inside container
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends patchelf upx git
-          pip install pyinstaller uv
+      - name: Install Nix
+        uses: cachix/install-nix-action@v22
+        with:
+          nix_path: nixpkgs=channel:nixos-23.11
 
-      - name: Install ONLY CORE application dependencies
+      - name: Build the PyInstaller executable inside a Nix shell
         run: |
-          uv venv .pyinstaller-venv
-          source .pyinstaller-venv/bin/activate
-          # We explicitly install only the core package, not '[all]' extras.
-          # This is the key to creating a smaller binary by excluding
-          # heavy optional dependencies like pandas, sqlalchemy, etc.
-          uv pip install -e .
-
-      - name: Build the executable with PyInstaller
-        run: |
-          source .pyinstaller-venv/bin/activate
-          # Use the .spec file for fine-grained control over the build process.
-          pyinstaller cx.spec --noconfirm
+          echo "--- Building executable in a hermetic Nix environment ---"
+          nix-shell --pure -p python312 pkgs.patchelf pkgs.upx python312Packages.pip python312Packages.uv python312Packages.pyinstaller --run "
+            echo '--- Inside Nix Shell ---'
+            python --version
+            
+            echo '--- Installing core dependencies ---'
+            uv venv .pyinstaller-venv
+            source .pyinstaller-venv/bin/activate
+            uv pip install -e .
+            
+            echo '--- Running PyInstaller ---'
+            pyinstaller cx.spec --noconfirm
+            echo '--- Build Complete ---'
+          "
 
       - name: Verify build artifacts and check size
         run: |
           echo "--- Verifying binary was created in dist/ ---"
           ls -lh dist/
-          # This acts as a safeguard against accidentally including heavy packages.
           find dist/cx -type f -size +60M -exec echo "::error::Binary size exceeds 60MB limit!" \; -exec exit 1 \;
           echo "--- Binary size is within acceptable limits. ---"
 
       - name: Smoke Test the PyInstaller Binary
         run: |
           echo "--- Running smoke test on built binary ---"
-          # Create a clean, isolated home directory to simulate a new user's machine.
           export HOME=/tmp/test-home
           mkdir -p $HOME
-
-          echo "--- 1. Testing '--version' command ---"
           ./dist/cx --version
-
-          echo "--- 2. Testing 'init' command ---"
-          # The `init` command is the most critical first-run test, as it verifies
-          # that bundled assets were correctly included by PyInstaller.
           ./dist/cx init
-
-          echo "--- Verifying that 'init' created files ---"
-          # Check that the command created the expected directory and a sample file.
           ls -l $HOME/.cx/connections/
           if [ ! -f "$HOME/.cx/connections/github.conn.yaml" ]; then
             echo "::error::'cx init' failed to create sample connection file!"
             exit 1
           fi
-
           echo "--- ✅ Binary smoke test PASSED ---"
 
       - name: Prepare and Archive Linux Executable
