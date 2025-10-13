@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "version": "1"
+  },
+  "packages": {
+    "system/toolkit": {
+      "version": "0.1.0",
+      "source": "registry",
+      "integrity": "sha256-5c02a47725d97beab420f28599949c50c623c346a88f5fed1120d12622e492ba",
+      "dependencies": {}
+    }
+  }
+}

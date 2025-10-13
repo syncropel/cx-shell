@@ -37,13 +37,13 @@ excluded_modules = [
 
 a = Analysis(
     ['src/cx_shell/main.py'],
-    pathex=[],
+    pathex=['src'], # <-- ADD THIS LINE to explicitly add 'src' to the path
     binaries=[],
     datas=added_files,
     hiddenimports=hidden_imports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=excluded_modules, # <-- USE THE EXCLUSION LIST HERE
+    excludes=excluded_modules,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     noarchive=False
