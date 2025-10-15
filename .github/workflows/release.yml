@@ -15,32 +15,30 @@ jobs:
       - name: Checkout repository code
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v22
+      # --- START OF DEFINITIVE FIX ---
+      - name: Install Nix (Modern Version)
+        # Use a newer version of the action to get a modern Nix.
+        uses: cachix/install-nix-action@v27
         with:
+          # Pin to a stable channel for CI to prevent breakages from `nixos-unstable`.
+          # This is a best practice for CI stability.
           nix_path: nixpkgs=channel:nixos-23.11
+      # --- END OF DEFINITIVE FIX ---
 
       - name: Run Pytest inside the hermetic devShell
         run: |
-          # This command enters the Nix development environment defined in flake.nix,
-          # which has all dependencies (Python, uv, pytest) pre-installed.
-          # It then executes our test suite. This ensures our CI tests run in an
-          # environment identical to our local development setup.
+          # The devShell defined in flake.nix installs all dependencies.
+          # We can run our tests directly within it.
           nix develop --command python -m pytest
 
   create-release:
     name: Create GitHub Release
-    # This job only runs if the 'test' job completes successfully.
     needs: [test]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to create a release and upload assets.
+      contents: write
     steps:
       - name: Create GitHub Release from Git Tag
         uses: softprops/action-gh-release@v2
         with:
-          # This automatically creates a new GitHub Release page based on the
-          # Git tag that triggered this workflow.
           generate_release_notes: true
-          # NOTE: There is no 'files' key. We are intentionally not uploading any
-          # binary artifacts. The source code at this tag is the release.
