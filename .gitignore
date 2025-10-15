@@ -1,43 +1,29 @@
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized files
 __pycache__/
-.pytest_cache/
-*.pyc
 *.py[cod]
 *$py.class
-
-# C extensions
-*.so
 
 # Distribution / packaging
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
-outputs/
 eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
 
-# Environments
-.env
-.env.*
+# Nix build artifacts
+result
+result-*
+
+# Local virtual environments
 .venv/
-venv/
-uv.lock
-ENV/
-env/
+.pyinstaller-venv/
+
+# Local archives and outputs
+*.tar.gz
+outputs/
 
 # IDE and editor configuration
 .idea/
@@ -47,4 +33,6 @@ env/
 .DS_Store
 *.swp
 
-result/
+# Test artifacts
+.pytest_cache/
+.cx/
