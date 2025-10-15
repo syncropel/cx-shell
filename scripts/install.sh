@@ -1,9 +1,9 @@
 #!/bin/bash
-# Syncropel CX Shell Installer v1.2
+# Syncropel CX Shell Installer v1.3
 #
-# This script installs the Syncropel CX Shell by leveraging the Nix package manager.
-# It uses modern, non-deprecated commands and includes a robust, patient
-# verification step to handle installation latency.
+# This script is designed to be maximally robust, creating its own
+# environment to ensure a successful installation even if the user's
+# shell profile is not yet configured for Nix.
 
 set -e
 
@@ -13,9 +13,6 @@ info() {
 }
 success() {
     echo -e "\033[1;32m[SUCCESS]\033[0m $1"
-}
-warn() {
-    echo -e "\033[1;33m[WARN]\033[0m $1"
 }
 error() {
     echo -e "\033[1;31m[ERROR]\033[0m $1" >&2
@@ -36,24 +33,36 @@ main() {
     fi
     success "Nix installation found."
 
-    # 2. Install the cx-shell from the GitHub repository
+    # --- START OF DEFINITIVE FIX ---
+    # 2. Find the user's Nix profile and source it for the current script session.
+    # This makes the script self-contained and not reliant on the user's current PATH.
+    NIX_PROFILE_DIR=""
+    # The `nix` executable is usually in a path like /nix/var/nix/profiles/default/bin/nix
+    # We want to find the user-specific profile, typically ~/.nix-profile
+    if [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
+        info "Sourcing Nix environment from ~/.nix-profile..."
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        NIX_PROFILE_DIR="$HOME/.nix-profile"
+    else
+        error "Could not find the Nix profile script. Your Nix installation might be non-standard."
+        exit 1
+    fi
+    # --- END OF DEFINITIVE FIX ---
+
+    # 3. Install the cx-shell from the GitHub repository
     info "Installing Syncropel CX Shell from github:syncropel/cx-shell..."
     info "This may take a few minutes the first time as Nix builds the environment..."
-    # The `nix profile add` command is blocking and will wait for completion.
     nix profile add github:syncropel/cx-shell --verbose
 
-    # 3. Robust Verification Step
+    # 4. Verification Step using the discovered profile path
     info "Verifying installation..."
-    CX_PATH="$HOME/.nix-profile/bin/cx"
+    CX_PATH="$NIX_PROFILE_DIR/bin/cx"
 
-    # --- THE FIX: Patiently wait for the symlink to appear ---
-    # We will check for up to 10 seconds for the symlink to be created by the
-    # background Nix daemon, making the script resilient to system load.
     max_wait_seconds=10
     elapsed=0
     while [ ! -L "$CX_PATH" ]; do
         if [ "$elapsed" -ge "$max_wait_seconds" ]; then
-            error "Installation failed! The 'cx' command was not found in ~/.nix-profile/bin after ${max_wait_seconds} seconds."
+            error "Installation failed! The 'cx' command was not found in your Nix profile bin directory after ${max_wait_seconds} seconds."
             error "Please check the output above for errors from the 'nix profile add' command."
             exit 1
         fi
@@ -61,10 +70,9 @@ main() {
         elapsed=$((elapsed + 1))
         echo -n "."
     done
-    echo # Newline after the dots
+    echo
 
     success "Verified that '$CX_PATH' symlink exists."
-
     echo
     success "Syncropel CX Shell installed successfully!"
     info "To get started, please open a NEW terminal session, then run:"
