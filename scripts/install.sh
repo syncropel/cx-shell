@@ -1,9 +1,8 @@
 #!/bin/bash
-# Syncropel CX Shell Installer
+# Syncropel CX Shell Installer v1.1
 #
 # This script installs the Syncropel CX Shell by leveraging the Nix package manager.
-# It ensures all dependencies are handled correctly, providing a fully reproducible
-# installation.
+# It uses modern, non-deprecated commands and includes verification steps.
 
 set -e
 
@@ -36,21 +35,29 @@ main() {
     fi
     success "Nix installation found."
 
-    # 2. Ensure the user's Nix configuration supports flakes (a common prerequisite)
-    info "Checking for Nix Flakes support..."
-    if ! nix flake --version &> /dev/null; then
-         warn "Your Nix installation may not have flakes enabled."
-         warn "The installer will attempt to proceed, but if it fails, please enable flakes by adding:"
-         warn "'experimental-features = nix-command flakes' to your nix.conf file."
-         echo
+    # 2. Add Nix profile to the shell if it's missing (for the CURRENT session)
+    # This makes the script more robust if the user's .bashrc isn't set up yet.
+    if [[ ":$PATH:" != *":$HOME/.nix-profile/bin:"* ]]; then
+        info "Temporarily adding Nix profile to PATH for this session."
+        export PATH="$HOME/.nix-profile/bin:$PATH"
     fi
 
-    # 3. Install the cx-shell from the main GitHub repository using `nix profile`
+    # 3. Install the cx-shell from the GitHub repository using the modern `add` command
     info "Installing Syncropel CX Shell from github:syncropel/cx-shell..."
-    # This command installs the `default` package from our flake into the user's
-    # active profile (usually ~/.nix-profile), making `cx` available everywhere.
-    # It fetches the latest commit from the `main` branch.
-    nix profile install github:syncropel/cx-shell
+    # The modern, correct command is `nix profile add`. We also add `--verbose` for better debugging.
+    nix profile add github:syncropel/cx-shell --verbose
+
+    # 4. Verification Step
+    info "Verifying installation..."
+    CX_PATH="$HOME/.nix-profile/bin/cx"
+
+    if [ -L "$CX_PATH" ]; then
+        success "Verified that '$CX_PATH' symlink exists."
+    else
+        error "Installation failed! The 'cx' command was not found in ~/.nix-profile/bin."
+        error "Please check the output above for errors from the 'nix profile add' command."
+        exit 1
+    fi
 
     echo
     success "Syncropel CX Shell installed successfully!"
@@ -59,5 +66,5 @@ main() {
     info "  cx init"
 }
 
-# Run the main function with all arguments passed to the script
+# Run the main function
 main "$@"
