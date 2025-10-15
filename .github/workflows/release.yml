@@ -1,6 +1,6 @@
-# /.github/workflows/release.yaml
+# /.github/workflows/release.yml
 
-name: Build and Release CX Shell
+name: Test and Release CX Shell
 
 on:
   push:
@@ -9,46 +9,10 @@ on:
 
 jobs:
   test:
-    name: Run Unit & Integration Tests
+    name: Run Unit & Integration Tests (via Nix)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        run: pip install uv
-
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: ${{ runner.os }}-uv-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-uv-
-
-      - name: Install dependencies including test tools
-        run: |
-          uv venv
-          uv pip install -e .[all]
-
-      - name: Run Pytest
-        run: |
-          source .venv/bin/activate
-          python -m pytest
-
-  build-linux:
-    name: Build Standalone Linux Executable (via Nix)
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout code
+      - name: Checkout repository code
         uses: actions/checkout@v4
 
       - name: Install Nix
@@ -56,100 +20,27 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-23.11
 
-      - name: Build the PyInstaller executable inside a Nix shell
+      - name: Run Pytest inside the hermetic devShell
         run: |
-          echo "--- Building executable in a hermetic Nix environment ---"
-          nix-shell --pure -p python312 pkgs.patchelf pkgs.upx python312Packages.pip python312Packages.uv python312Packages.pyinstaller --run "
-            echo '--- Inside Nix Shell ---'
-            python --version
-            
-            echo '--- Installing core dependencies ---'
-            uv venv .pyinstaller-venv
-            source .pyinstaller-venv/bin/activate
-            uv pip install -e .
-            
-            echo '--- Running PyInstaller ---'
-            pyinstaller cx.spec --noconfirm
-            echo '--- Build Complete ---'
-          "
+          # This command enters the Nix development environment defined in flake.nix,
+          # which has all dependencies (Python, uv, pytest) pre-installed.
+          # It then executes our test suite. This ensures our CI tests run in an
+          # environment identical to our local development setup.
+          nix develop --command python -m pytest
 
-      - name: Verify build artifacts and check size
-        run: |
-          echo "--- Verifying binary was created in dist/ ---"
-          ls -lh dist/
-          find dist/cx -type f -size +60M -exec echo "::error::Binary size exceeds 60MB limit!" \; -exec exit 1 \;
-          echo "--- Binary size is within acceptable limits. ---"
-
-      - name: Smoke Test the PyInstaller Binary
-        run: |
-          echo "--- Running smoke test on built binary ---"
-          export HOME=/tmp/test-home
-          mkdir -p $HOME
-          ./dist/cx --version
-          ./dist/cx init
-          ls -l $HOME/.cx/connections/
-          if [ ! -f "$HOME/.cx/connections/github.conn.yaml" ]; then
-            echo "::error::'cx init' failed to create sample connection file!"
-            exit 1
-          fi
-          echo "--- ✅ Binary smoke test PASSED ---"
-
-      - name: Prepare and Archive Linux Executable
-        id: prepare_artifact
-        shell: bash
-        run: |
-          VERSION=${{ github.ref_name }}
-          ARCHIVE_NAME="cx-${VERSION}-linux-x86_64.tar.gz"
-
-          # Create the final distributable archive.
-          tar -czvf "${ARCHIVE_NAME}" -C dist cx
-
-          # Set environment variables for use in subsequent steps.
-          echo "ASSET_PATH=${ARCHIVE_NAME}" >> $GITHUB_ENV
-          echo "ASSET_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
-
-      - name: Smoke Test the Final Archive
-        run: |
-          echo "--- Verifying final artifact: ${{ env.ASSET_NAME }} ---"
-          mkdir -p /tmp/test-install
-          tar -xzf ${{ env.ASSET_NAME }} -C /tmp/test-install
-
-          echo "--- Running smoke test on extracted artifact ---"
-          /tmp/test-install/cx --version
-          echo "--- ✅ Final artifact smoke test PASSED ---"
-
-      - name: Upload Linux artifact for release job
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-artifact
-          path: ${{ env.ASSET_PATH }}
-
-  # Placeholder for future macOS and Windows build jobs.
-  # build-macos:
-  #   ...
-  # build-windows:
-  #   ...
-
-  release:
+  create-release:
     name: Create GitHub Release
-    # This job will depend on all build jobs in the future (e.g., [build-linux, build-macos]).
-    needs: [build-linux]
+    # This job only runs if the 'test' job completes successfully.
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-
+      contents: write # Required to create a release and upload assets.
     steps:
-      - name: Download all built artifacts from previous jobs
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-
-      - name: List downloaded artifacts for verification
-        run: ls -R release-assets
-
-      - name: Create release and upload all assets
+      - name: Create GitHub Release from Git Tag
         uses: softprops/action-gh-release@v2
         with:
+          # This automatically creates a new GitHub Release page based on the
+          # Git tag that triggered this workflow.
           generate_release_notes: true
-          # This will upload all files found in the release-assets directory and its subdirectories.
-          files: release-assets/**/*
+          # NOTE: There is no 'files' key. We are intentionally not uploading any
+          # binary artifacts. The source code at this tag is the release.
