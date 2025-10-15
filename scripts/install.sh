@@ -1,9 +1,9 @@
 #!/bin/bash
-# Syncropel CX Shell Installer v1.3
+# Syncropel CX Shell Installer v1.4
 #
-# This script is designed to be maximally robust, creating its own
-# environment to ensure a successful installation even if the user's
-# shell profile is not yet configured for Nix.
+# This script is designed to be maximally robust, supporting both single-user
+# and multi-user Nix installations by searching for the profile script in
+# standard locations.
 
 set -e
 
@@ -33,18 +33,18 @@ main() {
     fi
     success "Nix installation found."
 
-    # --- START OF DEFINITIVE FIX ---
-    # 2. Find the user's Nix profile and source it for the current script session.
-    # This makes the script self-contained and not reliant on the user's current PATH.
-    NIX_PROFILE_DIR=""
-    # The `nix` executable is usually in a path like /nix/var/nix/profiles/default/bin/nix
-    # We want to find the user-specific profile, typically ~/.nix-profile
-    if [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
-        info "Sourcing Nix environment from ~/.nix-profile..."
+    # --- START OF DEFINITIVE FIX for MULTI-USER NIX ---
+    # 2. Find and source the Nix profile script for the current session.
+    #    This makes the installer self-contained and robust.
+    if [ -e "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
+        info "Sourcing Nix environment from single-user profile (~/.nix-profile)..."
         . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        NIX_PROFILE_DIR="$HOME/.nix-profile"
+    elif [ -e "/etc/profile.d/nix.sh" ]; then
+        info "Sourcing Nix environment from multi-user profile (/etc/profile.d)..."
+        . "/etc/profile.d/nix.sh"
     else
-        error "Could not find the Nix profile script. Your Nix installation might be non-standard."
+        error "Could not find the Nix profile script in standard locations."
+        error "Your Nix installation might be non-standard. Please ensure your shell is correctly configured for Nix."
         exit 1
     fi
     # --- END OF DEFINITIVE FIX ---
@@ -54,15 +54,16 @@ main() {
     info "This may take a few minutes the first time as Nix builds the environment..."
     nix profile add github:syncropel/cx-shell --verbose
 
-    # 4. Verification Step using the discovered profile path
+    # 4. Robust Verification Step
     info "Verifying installation..."
-    CX_PATH="$NIX_PROFILE_DIR/bin/cx"
+    # Even in multi-user mode, `nix profile` commands create/update the symlink at `~/.nix-profile`
+    CX_PATH="$HOME/.nix-profile/bin/cx"
 
     max_wait_seconds=10
     elapsed=0
     while [ ! -L "$CX_PATH" ]; do
         if [ "$elapsed" -ge "$max_wait_seconds" ]; then
-            error "Installation failed! The 'cx' command was not found in your Nix profile bin directory after ${max_wait_seconds} seconds."
+            error "Installation failed! The 'cx' command was not found in ~/.nix-profile/bin after ${max_wait_seconds} seconds."
             error "Please check the output above for errors from the 'nix profile add' command."
             exit 1
         fi
@@ -70,7 +71,7 @@ main() {
         elapsed=$((elapsed + 1))
         echo -n "."
     done
-    echo
+    echo # Newline after the dots
 
     success "Verified that '$CX_PATH' symlink exists."
     echo
