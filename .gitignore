@@ -36,3 +36,4 @@ outputs/
 # Test artifacts
 .pytest_cache/
 .cx/
+result

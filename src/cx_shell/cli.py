@@ -360,7 +360,7 @@ def upgrade():
 @app.command()
 @handle_exceptions
 def serve(
-    host: str = typer.Option("127.0.0.1", help="The host to bind the server to."),
+    host: str = typer.Option("0.0.0.0", help="The host to bind the server to."),
     port: int = typer.Option(8888, help="The port to run the server on."),
 ):
     """Launches the cx-server API for programmatic access and UIs."""
