@@ -4,6 +4,7 @@ from typing import Any, Optional, Dict
 import structlog
 import uuid
 import yaml
+from fastapi.middleware.cors import CORSMiddleware
 
 from ..interactive.session import SessionState
 from ..interactive.executor import CommandExecutor
@@ -17,6 +18,16 @@ from cx_core_schemas.notebook import ContextualPage
 
 logger = structlog.get_logger(__name__)
 app = FastAPI()
+
+origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 # In-memory store for session-specific data. In production, this might move to Redis.
 SESSION_DATA = {}
