@@ -16,7 +16,7 @@ license = { text = "MIT" }
 # --- Core Dependencies (Merged from both projects) ---
 dependencies = [
     # Core CLI and Logging
-    "cx-core-schemas @ git+https://github.com/syncropel/cx-core-schemas.git",
+    "cx-core-schemas @ git+https://github.com/syncropel/cx-core-schemas.git@v0.2.0",
     "typer[all]>=0.9.0",
     "structlog>=24.1.0",
     "rich>=13.0.0",
