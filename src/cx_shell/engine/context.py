@@ -70,7 +70,10 @@ class RunContext(BaseModel):
     run_type: Literal["flow", "notebook"] = Field(
         "flow", description="The type of computational document being executed."
     )
-    steps: Dict[str, Any] = Field(default_factory=dict)
+    steps: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="A dictionary holding the results of previously executed steps in the current session.",
+    )
 
     class Config:
         arbitrary_types_allowed = True

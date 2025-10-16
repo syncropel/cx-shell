@@ -5,7 +5,16 @@ import uuid
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Literal, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Literal,
+    Optional,
+    Tuple,
+)
 import structlog
 import yaml
 import networkx as nx
@@ -19,6 +28,8 @@ from ...engine.context import RunContext
 from ...management.notebook_parser import NotebookParser
 from cx_core_schemas.notebook import ContextualPage
 from cx_core_schemas.connector_script import FileToWrite, WriteFilesAction
+from cx_core_schemas.server_schemas import BlockOutput, DataRef, SduiPayload
+from .utils import safe_serialize
 from .config import ConnectionResolver
 
 if TYPE_CHECKING:
@@ -561,8 +572,20 @@ class ScriptEngine:
         status_callback: Optional[Callable[[str, str, Any], Awaitable[None]]] = None,
     ):
         """
-        Executes a pre-parsed computational document (Flow or Contextual Page),
-        providing real-time status updates via an optional async callback.
+        Executes a pre-parsed computational document, providing real-time status
+        updates via an optional async callback. This version implements the
+        "Hybrid Claim Check" pattern for all block outputs.
+
+        It intelligently decides whether to embed small results directly in the
+        event payload for speed, or to create a secure, retrievable reference
+        (a "claim check") for large data artifacts to ensure a responsive UI and
+        scalable data handling.
+
+        Args:
+            context: The stateful RunContext for this execution.
+            script_data: The pre-parsed ContextualPage or ConnectorScript model.
+            no_cache: If True, bypasses cache lookups and forces re-execution.
+            status_callback: An async function to call for real-time status updates.
         """
         if isinstance(script_data, ContextualPage):
             flow_id = script_data.name
@@ -593,15 +616,16 @@ class ScriptEngine:
         final_results: Dict[str, Any] = {}
         recursive_render = recursive_render_factory(self.jinja_env)
 
+        # Define the threshold for embedding data directly in bytes
+        EMBED_THRESHOLD_BYTES = 256 * 1024  # 256KB
+
         try:
             for generation in topological_generations:
                 for step_id in generation:
+                    step_start_time = datetime.now(timezone.utc)
                     raw_step_dict = dag.nodes[step_id]["step_data"].model_dump(
                         by_alias=True
                     )
-
-                    if status_callback:
-                        await status_callback(step_id, "running", None)
 
                     full_render_context = {
                         "page": script_data.model_dump()
@@ -641,14 +665,15 @@ class ScriptEngine:
                                     "outputs": {},
                                     "output_hash": None,
                                 }
-                                final_results[
-                                    raw_step_dict.get("id") or raw_step_dict.get("name")
-                                ] = None
+                                final_results[step_id] = None
                                 continue
                         except Exception as e:
                             raise ValueError(
-                                f"Failed to evaluate 'if' condition for step '{raw_step_dict.get('name') or step_id}': {e}"
+                                f"Failed to evaluate 'if' condition for step '{step_id}': {e}"
                             ) from e
+
+                    if status_callback:
+                        await status_callback(step_id, "running", None)
 
                     try:
                         rendered_step_dict = recursive_render(
@@ -657,7 +682,7 @@ class ScriptEngine:
                         validated_step = ConnectorStep(**rendered_step_dict)
                     except Exception as e:
                         raise ValueError(
-                            f"Failed to render/validate step '{raw_step_dict.get('name') or step_id}': {e}"
+                            f"Failed to render/validate step '{step_id}': {e}"
                         ) from e
 
                     parent_hashes = {
@@ -669,7 +694,6 @@ class ScriptEngine:
                         None if no_cache else self._find_cached_step(cache_key)
                     )
 
-                    raw_result_wrapped: Any
                     if cached_step:
                         raw_result_wrapped = (
                             json.loads(
@@ -695,18 +719,63 @@ class ScriptEngine:
                             output_hash=output_hash,
                         )
 
+                    step_end_time = datetime.now(timezone.utc)
+                    duration_ms = int(
+                        (step_end_time - step_start_time).total_seconds() * 1000
+                    )
+
                     raw_result = self._unwrap_engine_result(raw_result_wrapped)
 
                     if isinstance(raw_result, dict) and "error" in raw_result:
                         error_message = raw_result["error"]
                         if status_callback:
-                            await status_callback(step_id, "error", error_message)
-                        raise RuntimeError(
-                            f"Step '{validated_step.name or step_id}' failed: {error_message}"
-                        )
+                            await status_callback(
+                                step_id,
+                                "error",
+                                {"error": error_message, "duration_ms": duration_ms},
+                            )
+                        raise RuntimeError(f"Step '{step_id}' failed: {error_message}")
 
                     if status_callback:
-                        await status_callback(step_id, "success", raw_result)
+                        try:
+                            result_bytes = json.dumps(
+                                safe_serialize(raw_result)
+                            ).encode("utf-8")
+                            result_size = len(result_bytes)
+                        except (TypeError, OverflowError):
+                            result_size = float("inf")
+
+                        if result_size < EMBED_THRESHOLD_BYTES:
+                            log.debug(
+                                "engine.output.embedding_inline",
+                                step_id=step_id,
+                                size_bytes=result_size,
+                            )
+                            sdui_payload = self._schematize_result(raw_result)
+                            block_output = BlockOutput(inline_data=sdui_payload)
+                        else:
+                            log.info(
+                                "engine.output.creating_data_ref",
+                                step_id=step_id,
+                                size_bytes=result_size,
+                            )
+                            renderer_hint, metadata = self._get_result_metadata(
+                                raw_result
+                            )
+                            access_url = f"http://localhost:8888/artifacts/{step_result_obj.output_hash}"
+                            data_ref = DataRef(
+                                artifact_id=step_result_obj.output_hash,
+                                renderer_hint=renderer_hint,
+                                metadata=metadata,
+                                access_url=access_url,
+                            )
+                            block_output = BlockOutput(data_ref=data_ref)
+
+                        await status_callback(
+                            step_id,
+                            "success",
+                            {"output": block_output, "duration_ms": duration_ms},
+                        )
 
                     step_outputs = {}
                     outputs_spec = raw_step_dict.get("outputs")
@@ -730,9 +799,7 @@ class ScriptEngine:
                                 step_outputs[output_name] = None
 
                     manifest.steps.append(step_result_obj)
-                    result_key = raw_step_dict.get("id") or raw_step_dict.get("name")
-                    final_results[result_key] = raw_result
-
+                    final_results[step_id] = raw_result
                     context.steps[step_id] = {
                         "result": raw_result,
                         "outputs": step_outputs,
@@ -759,7 +826,7 @@ class ScriptEngine:
                                             manifest.artifacts[file_path.name] = (
                                                 Artifact(
                                                     content_hash=content_hash,
-                                                    mime_type="application/octet-stream",
+                                                    mime_type="application/octet-stream",  # A generic default
                                                     size_bytes=file_path.stat().st_size,
                                                 )
                                             )
@@ -774,9 +841,20 @@ class ScriptEngine:
             log.info("engine.run.success")
             return final_results
         except Exception as e:
-            # If the callback is defined, report the final top-level failure
-            if status_callback and "step_id" in locals():
-                await status_callback(locals()["step_id"], "error", str(e))
+            if (
+                status_callback
+                and "step_id" in locals()
+                and "step_start_time" in locals()
+            ):
+                duration_ms = int(
+                    (datetime.now(timezone.utc) - step_start_time).total_seconds()
+                    * 1000
+                )
+                await status_callback(
+                    locals()["step_id"],
+                    "error",
+                    {"error": str(e), "duration_ms": duration_ms},
+                )
 
             manifest.status = "failed"
             log.error("engine.run.failed", error=str(e), exc_info=True)
@@ -795,6 +873,40 @@ class ScriptEngine:
             manifest_path = run_dir / "manifest.json"
             manifest_path.write_text(manifest.model_dump_json(indent=2))
             log.info("engine.run.manifest_written", path=str(manifest_path))
+
+    def _schematize_result(self, raw_result: Any) -> SduiPayload:
+        """Inspects a raw result and wraps it in a default SDUI payload."""
+        if (
+            isinstance(raw_result, list)
+            and raw_result
+            and isinstance(raw_result[0], dict)
+        ):
+            return SduiPayload(ui_component="table", props={"data": raw_result})
+        if isinstance(raw_result, (dict, list)):
+            return SduiPayload(ui_component="json", props={"data": raw_result})
+        if isinstance(raw_result, str):
+            return SduiPayload(ui_component="text", props={"content": raw_result})
+        # Default fallback for other types
+        return SduiPayload(
+            ui_component="json", props={"data": safe_serialize(raw_result)}
+        )
+
+    def _get_result_metadata(self, raw_result: Any) -> Tuple[str, Dict]:
+        """Inspects a raw result and extracts metadata for the DataRef."""
+        if (
+            isinstance(raw_result, list)
+            and raw_result
+            and isinstance(raw_result[0], dict)
+        ):
+            renderer_hint = "table"
+            metadata = {
+                "record_count": len(raw_result),
+                "columns": list(raw_result[0].keys()),
+            }
+            return renderer_hint, metadata
+
+        # Default fallback
+        return "json", {}
 
 
 def recursive_render_factory(jinja_env):
